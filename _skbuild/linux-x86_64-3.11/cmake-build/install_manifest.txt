@@ -1,0 +1,1 @@
+/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-install/./pyNetX.cpython-311-x86_64-linux-gnu.so

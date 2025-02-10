@@ -1,0 +1,23 @@
+### pyproject.toml
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "cmake>=3.14",
+    "scikit-build>=0.18.1",
+    "pybind11>=2.6.0"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyNetX"
+version = "1.0.0"
+description = "NETCONF client with truly async capabilities"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    { name = "Sambhu Nampoothiri G", email = "get4sambhugn@gmail.com" }
+]
+dependencies = [
+]
