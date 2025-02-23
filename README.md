@@ -64,10 +64,10 @@ client = NetconfClient(
 )
 
 # Establish a connection
-client.connect_sync()
+status = client.connect_sync()
 
 # Retrieve the running configuration
-config = client.get_config(source="running")
+config = client.get_config_sync(source="running")
 print("Running Configuration:")
 print(config)
 
@@ -94,7 +94,7 @@ async def main():
     )
     
     # Asynchronously connect to the device
-    await client.connect_async()
+    await status = client.connect_async()
     
     # Retrieve configuration asynchronously
     config = await client.get_config_async(source="running")
