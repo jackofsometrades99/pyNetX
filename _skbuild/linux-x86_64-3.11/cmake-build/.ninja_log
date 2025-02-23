@@ -1,5 +1,0 @@
-# ninja log v5
-0	2394	1739160485921577919	CMakeFiles/pyNetX.dir/src/netconf_client.cpp.o	f843db3b437e0ba8
-0	4228	1739160487753626567	CMakeFiles/pyNetX.dir/src/bindings.cpp.o	4dfd36796ac9acbd
-4228	9430	1739160492957761261	pyNetX.cpython-311-x86_64-linux-gnu.so	b1c9851745a57ae2
-9430	9434	0	CMakeFiles/install.util	ec54874463830cc9

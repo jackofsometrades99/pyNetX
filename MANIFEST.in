@@ -1,0 +1,17 @@
+# MANIFEST.in
+
+# Include the license and readme files.
+include LICENSE
+include README.md
+
+# Include the CMakeLists.txt file.
+include CMakeLists.txt
+
+# Recursively include all files in the "include" directory (e.g., header files).
+recursive-include include *.h *.hpp
+
+# Recursively include all source files in the "src" directory.
+recursive-include src *.cpp *.cxx *.cc *.h *.hpp
+
+# Optionally, include any other files (e.g., configuration files, scripts, etc.)
+include setup.py

@@ -1,7 +1,0 @@
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/pyNetX.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/edit_cache.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/rebuild_cache.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/list_install_components.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/install.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/install/local.dir
-/home/sambhu/Documents/netconf_pybind/_skbuild/linux-x86_64-3.11/cmake-build/CMakeFiles/install/strip.dir

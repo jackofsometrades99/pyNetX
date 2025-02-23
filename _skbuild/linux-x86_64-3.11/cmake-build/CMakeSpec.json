@@ -1,1 +1,0 @@
-{"args": ["/tmp/pip-build-env-0dx1gwzt/overlay/lib/python3.11/site-packages/cmake/data/bin/cmake", "-Dpybind11_DIR=/home/sambhu/Documents/netconf_pybind/my_new_venv/lib/python3.11/site-packages/pybind11/share/cmake/pybind11", "-DCMAKE_BUILD_TYPE:STRING=Release"], "version": "3.31.4", "environment": {"PYTHONNOUSERSITE": "1", "PYTHONPATH": "/tmp/pip-build-env-0dx1gwzt/site"}}
