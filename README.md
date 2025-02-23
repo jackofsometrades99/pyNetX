@@ -9,8 +9,7 @@
 
 ## Documentation
 
-The full documentation (with detailed API references and more usage examples) is available on the project's GitHub page:  
-**GitHub:** [https://github.com/jackofsometrades99/pyNetX](https://github.com/jackofsometrades99/pyNetX)  
+The full documentation (with detailed API references and more usage examples) will be made available soon here.
 
 ---
 
