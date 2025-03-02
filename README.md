@@ -9,8 +9,9 @@
 
 ## Documentation
 
-The full documentation (with detailed API references and more usage examples) will be made available soon here.
+The full documentation (with detailed API references and more usage examples) is here.
 
+[pyNetX Official Documentation](https://pynetx.readthedocs.io/en/latest/)
 ---
 
 ## Requirements
