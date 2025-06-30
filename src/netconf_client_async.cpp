@@ -44,20 +44,6 @@ std::future<std::string> NetconfClient::send_rpc_async(const std::string& rpc) {
     });
 }
 
-std::future<std::string> NetconfClient::receive_notification_async() {
-    auto self = shared_from_this();
-    return get_pool().enqueue([self]() -> std::string {
-        if (!self->notif_is_connected_) {
-            throw NetconfException("Client already not connected");
-        }
-        if (self->notif_is_blocking_) {
-            throw NetconfException("Client is connected synchronously, call synchronous methods");
-        }
-        std::unique_lock<std::mutex> lock(self->session_mutex_);
-        return self->receive_notification_non_blocking();
-    });
-}
-
 std::future<std::string> NetconfClient::get_async(const std::string& filter) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, filter]() -> std::string {

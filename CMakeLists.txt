@@ -25,7 +25,7 @@ endif()
 # If Python3_INCLUDE_DIRS is still empty, set it manually.
 if (NOT Python3_INCLUDE_DIRS)
   message(WARNING "Python3_INCLUDE_DIRS is empty; setting it manually")
-  set(Python3_INCLUDE_DIRS "/opt/_internal/cpython-3.11.11/include/python3.11")
+  set(Python3_INCLUDE_DIRS "/opt/_internal/cpython-3.11.13/include/python3.11")
 endif()
 
 # Find pybind11, pkg-config, and other dependencies.
@@ -51,6 +51,8 @@ pybind11_add_module(pyNetX
     src/netconf_client_async.cpp
     src/netconf_client_sync.cpp
     src/thread_pool_global.cpp
+    src/notification_reactor.cpp
+    src/notification_reactor_manager.cpp
 )
 
 # (Optional) Set output directories.

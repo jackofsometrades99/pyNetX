@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "netconf_client.hpp"
+#include "notification_reactor_manager.hpp"
 #include "thread_pool.hpp"
 #include "thread_pool_global.hpp"
 #include <future>
@@ -124,7 +125,13 @@ PYBIND11_MODULE(pyNetX, m) {
     }, py::arg("n"),
     "Set the size of the global thread pool for all NetconfClient async operations."
     );
-
+    m.def("set_notification_reactor_count",
+        [](size_t n){
+            NotificationReactorManager::instance().set_reactor_count(n);
+        },
+        py::arg("num_reactors"),
+        "Reconfigure the number of notification-reactor threads on the fly."
+    );
     m.doc() = "NETCONF client with async non blocking capabilities.";
 
     register_exceptions(m);
@@ -189,9 +196,8 @@ PYBIND11_MODULE(pyNetX, m) {
         .def("send_rpc_async", [](std::shared_ptr<NetconfClient> &self, const std::string &rpc) {
             return wrap_future(self->send_rpc_async(rpc));
         }, py::arg("rpc"))
-        .def("receive_notification_async", [](std::shared_ptr<NetconfClient> &self) {
-            return wrap_future(self->receive_notification_async());
-        })
+        .def("next_notification", &NetconfClient::next_notification)
+        .def("is_subscription_active", &NetconfClient::is_subscription_active)
         .def("get_async", [](std::shared_ptr<NetconfClient> &self, const std::string &filter) {
             return wrap_future(self->get_async(filter));
         }, py::arg("filter") = "")

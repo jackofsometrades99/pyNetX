@@ -2,9 +2,10 @@
 
 **pyNetX** is a Python library that facilitates both synchronous and asynchronous client-side scripting and application development around the NETCONF protocol. Developed by **Sambhu Nampoothiri G**, pyNetX provides a modern, efficient interface for interacting with NETCONF-enabled network devices — with truly asynchronous capabilities using non blocking connections.
 
-> **Current Versions:**  
-> Stable: **v1.0.6**  
-
+> **Current Versions:**
+> Stable: **v1.0.8** 
+> Stable: **v1.0.7**  
+> Stable: **v1.0.6**
 ---
 
 ## Documentation
@@ -164,7 +165,7 @@ For every synchronous method, there is an asynchronous counterpart that returns 
 - **`connect_async()`**
 - **`disconnect_async()`**
 - **`send_rpc_async(rpc="")`**
-- **`receive_notification_async()`**
+- **`next_notificaiton()`**
 - **`get_async(filter="")`**
 - **`get_config_async(source="running", filter="")`**
 - **`copy_config_async(target, source)`**
@@ -190,6 +191,23 @@ These methods can be used in both synchronous and asynchronous operations:
   ```python
   import pyNetX
   pyNetX.set_threadpool_size(10)
+  ```
+
+- **`set_notification_reactor_count(nThreads)`**
+    Reconfigure how many background epoll-reactor threads PyNetX
+    will run to monitor notification sockets.
+
+    By default you should first call init(total_devices) or pass
+    your preferred count here.  Each reactor thread will manage
+    roughly FD_count / nThreads file descriptors.  Calling this
+    at any time will tear down and rebuild the pool, then
+    rebalance all existing subscriptions evenly across the new
+    set of threads.
+
+  ```python
+  import pyNetX
+  # Create 8 epoll‐based reactors to handle your notification streams
+  pyNetX.set_notification_reactor_count(8)
   ```
 
 ## Exception Handling

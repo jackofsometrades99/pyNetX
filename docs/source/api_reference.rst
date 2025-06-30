@@ -709,6 +709,26 @@ Sets the number of threads in the shared task pool.
    pyNetX.set_threadpool_size(10) # Creates 10 threads in the shared task pool.
 
 
+set_notification_reactor_count(nThreads)
+~~~~~~~~~~~~~~
+
+**Description**  
+Sets the number of threads in the notification reactor pool.
+
+**Parameters**  
+- **target** (int): Number of threads present in reactor pool.
+
+**Returns**  
+- None.
+
+**Example**  
+
+.. code-block:: python
+
+   import pyNetX
+   pyNetX.set_notification_reactor_count(10) # Creates 10 threads in the notification reactor pool.
+
+
 Common Exceptions
 -----------------
 All methods may raise one of the following custom exceptions upon failure:

@@ -2,7 +2,10 @@
 
 #ifndef NETCONF_CLIENT_HPP
 #define NETCONF_CLIENT_HPP
-
+#include "notification_reactor.hpp"
+#include <mutex>
+#include <condition_variable>
+#include <deque>
 #include <string>
 #include <future>
 #include <stdexcept>
@@ -11,6 +14,43 @@
 #include <tinyxml2.h>
 #include <atomic>
 #include <unistd.h>
+#include <sys/epoll.h>
+
+// RAII Wrapper for an epoll file descriptor.
+class EpollRAII {
+public:
+    explicit EpollRAII(int fd = -1) : fd_(fd) {}
+    ~EpollRAII() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+    }
+    EpollRAII(const EpollRAII&) = delete;
+    EpollRAII& operator=(const EpollRAII&) = delete;
+    EpollRAII(EpollRAII&& other) noexcept : fd_(other.fd_) {
+        other.fd_ = -1;
+    }
+    EpollRAII& operator=(EpollRAII&& other) noexcept {
+        if (this != &other) {
+            if (fd_ >= 0) {
+                ::close(fd_);
+            }
+            fd_ = other.fd_;
+            other.fd_ = -1;
+        }
+        return *this;
+    }
+    int get() const { return fd_; }
+    void reset(int fd = -1) {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+        fd_ = fd;
+    }
+private:
+    int fd_;
+};
+
 
 // If LIBSSH2_DISCONNECT_NORMAL is not defined, define it to 0.
 #ifndef LIBSSH2_DISCONNECT_NORMAL
@@ -171,7 +211,8 @@ public:
     std::string locked_edit_config_non_blocking(const std::string& target,
                                    const std::string& config,
                                    bool do_validate=false);
-    std::string receive_notification_non_blocking();
+    std::string next_notification();
+    void on_notification_ready(int fd);
 
     // ----------------------- Synchronous Wrappers -------------------------
 
@@ -220,9 +261,9 @@ public:
     std::future<std::string> locked_edit_config_async(const std::string& target,
                                                       const std::string& config,
                                                       bool do_validate=false);
-    std::future<std::string> receive_notification_async();
     
     // Disconnect method (common to all modes)
+    bool is_subscription_active() const;
     void disconnect();
     void delete_notification_session();
     void delete_subsription();
@@ -265,7 +306,7 @@ private:
     static std::string resolve_hostname_blocking(const std::string &hostname);
     static std::string resolve_hostname_non_blocking(const std::string &hostname, int timeout_seconds);
 
-private:
+    private:
     std::string hostname_;
     int port_;
     std::string username_;
@@ -278,20 +319,26 @@ private:
     std::mutex session_mutex_;
     std::mutex ssh_mutex_;
     std::mutex dns_mutex_;
-    bool is_connected_ = false;
-    bool is_blocking_ = false;
+    EpollRAII epoll_fd_;            // Managed epoll descriptor
+    bool is_connected_       = false;
+    bool is_blocking_        = false;
     bool notif_is_connected_ = false;
-    bool notif_is_blocking_ = false;
-    // RAII-managed resources:
+    bool notif_is_blocking_  = false;
 
-    // MAIN session/channel for RPC's
+    std::mutex _notif_queue_mtx;
+    std::condition_variable  _notif_queue_cv;
+    std::deque<std::string>  _notif_queue;
+
+    // RAII-managed resources:
     SessionPtr session_;      // libssh2 session.
     ChannelPtr channel_;      // libssh2 channel.
-    SocketRAII socket_;       // Socket file descriptor.
+    SocketRAII socket_;       // Socket file descriptor for RPC session.
+
     // SECONDARY session/channel for notifications
     SessionPtr notif_session_;
     ChannelPtr notif_channel_;
-    SocketRAII notif_socket_;  // separate socket for the notification session
+    SocketRAII notif_socket_; // Notification session socket
 };
+
 
 #endif // NETCONF_CLIENT_HPP
