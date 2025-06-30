@@ -417,7 +417,7 @@ Sends a custom RPC asynchronously and awaits the response.
 
 .. code-block:: python
 
-   rpc_command = \"\"\"<get><filter type='subtree'><interfaces/></filter></get>\"\"\"
+   rpc_command = '<rpc message-id="102" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">' + rpc + '</rpc>'
    reply = await client.send_rpc_async(rpc_command)
    print("Async RPC reply:", reply)
 
