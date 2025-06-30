@@ -422,23 +422,25 @@ Sends a custom RPC asynchronously and awaits the response.
    print("Async RPC reply:", reply)
 
 
-receive_notification_async()
+next_notification()
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Description**  
-Asynchronously waits for a single notification from the device.
+Asynchronously tries to retrieve NETCONF notification data 
+( can be a complete notification or partial notification string ) from 
+NETCONF subscribed channel
 
 **Parameters**  
 - None
 
 **Returns**  
-- A string with the notification XML or None on timeout.
+- A string with the notification XML or piece of a NETCONF notification or None on timeout.
 
 **Example**  
 
 .. code-block:: python
 
-   notification = await client.receive_notification_async()
+   notification = await client.next_notification()
    print("Async notification received:", notification)
 
 
