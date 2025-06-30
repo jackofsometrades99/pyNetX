@@ -117,96 +117,133 @@ std::string NetconfClient::resolve_hostname_non_blocking(
 
 // ----------------------- Read Helpers -------------------------
 
+
 std::string NetconfClient::read_until_eom_non_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
     int read_timeout) {
         std::string response;
         std::string tail;
-        char buffer[512];
+        char buffer[1024];
         auto last_data_time = std::chrono::steady_clock::now();
-        const auto timeout = std::chrono::seconds(read_timeout);
+        const bool infinite_wait = (read_timeout < 0);
+        const auto timeout = std::chrono::seconds(infinite_wait ? 0 : read_timeout);
 
         while (true) {
             if (!chan) {
                 throw NetconfException("Operation cancelled: connection object is missing");
             }
-            if (std::chrono::steady_clock::now() - last_data_time > timeout) {
+            if (!infinite_wait && std::chrono::steady_clock::now() - last_data_time > timeout) {
                 throw NetconfException("Device failed to send data , try increasing read_timeout");
             }
             int nbytes = libssh2_channel_read_nonblocking(chan, buffer, sizeof(buffer), 0);
-            if (nbytes == LIBSSH2_ERROR_EAGAIN) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            } else if (nbytes < 0) {
-                char* err_msg = nullptr;
-                libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-                throw NetconfException("Error reading from channel: " +
-                                        std::string(err_msg ? err_msg : "Unknown error"));
-            } else if (nbytes > 0) {
-                response.append(buffer, nbytes);
-                std::string new_data(buffer, nbytes);
-                if (response.size() >= 7) {
-                    tail = response.substr(response.size() - 7, 7);
-                } else {
-                    tail = response;
+            if (!infinite_wait){
+
+                if (nbytes == LIBSSH2_ERROR_EAGAIN) {
+                    std::this_thread::yield();
+                    continue;
+                } else if (nbytes < 0) {
+                    char* err_msg = nullptr;
+                    libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                    throw NetconfException("Error reading from channel: " +
+                                            std::string(err_msg ? err_msg : "Unknown error"));
+                } else if (nbytes > 0) {
+                    response.append(buffer, nbytes);
+                    std::string new_data(buffer, nbytes);
+                    if (response.size() >= 7) {
+                        tail = response.substr(response.size() - 7, 7);
+                    } else {
+                        tail = response;
+                    }
+                    std::string check_str = tail + new_data;
+                    if (check_str.find("]]>]]>") != std::string::npos) {
+                        break;
+                    }
+                    last_data_time = std::chrono::steady_clock::now();
+                    continue;
                 }
-                std::string check_str = tail + new_data;
-                if (check_str.find("]]>]]>") != std::string::npos) {
+            } else {
+                if (nbytes == LIBSSH2_ERROR_EAGAIN) {
                     break;
+                } else if (nbytes < 0) {
+                    char* err_msg = nullptr;
+                    libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                    throw NetconfException("Error reading from channel: " +
+                                            std::string(err_msg ? err_msg : "Unknown error"));
+                } else if (nbytes > 0) {
+                    response.append(buffer, nbytes);
+                    continue;
                 }
-                last_data_time = std::chrono::steady_clock::now();
-                continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         return response;
 }
 
+
 std::string NetconfClient::read_until_eom_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
-    int read_timeout) {
-        std::string response;
-        std::string tail;
-        char buffer[512];
-        auto last_data_time = std::chrono::steady_clock::now();
-        const auto timeout = std::chrono::seconds(read_timeout);
+    int read_timeout)
+{
+    std::string response;
+    std::string tail;
+    auto last_data_time = std::chrono::steady_clock::now();
+    
+    // Determine whether we should ever timeout:
+    const bool infinite_wait = (read_timeout < 0);
+    char buffer[2048];
 
-        while (true) {
-            if (!chan) {
-                throw NetconfException("Operation cancelled: connection object is missing");
-            }
-            if (std::chrono::steady_clock::now() - last_data_time > timeout) {
-                throw NetconfException("Device failed to send data , try increasing read_timeout");
-            }
-            int nbytes = libssh2_channel_read(chan, buffer, sizeof(buffer));
-            if (nbytes == LIBSSH2_ERROR_EAGAIN) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            } else if (nbytes < 0) {
-                char* err_msg = nullptr;
-                libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-                throw NetconfException("Error reading from channel: " +
-                                        std::string(err_msg ? err_msg : "Unknown error"));
-            } else if (nbytes > 0) {
-                response.append(buffer, nbytes);
-                std::string new_data(buffer, nbytes);
-                if (response.size() >= 7) {
-                    tail = response.substr(response.size() - 7, 7);
-                } else {
-                    tail = response;
-                }
-                std::string check_str = tail + new_data;
-                if (check_str.find("]]>]]>") != std::string::npos) {
-                    break;
-                }
-                last_data_time = std::chrono::steady_clock::now();
-                continue;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // If not infinite, prepare a std::chrono timeout duration
+    const std::chrono::seconds timeout{ infinite_wait ? 0 : read_timeout };
+
+    while (true) {
+        if (!chan) {
+            throw NetconfException("Operation cancelled: connection object is missing");
         }
-        return response;
+
+        // Only check elapsed time if we're NOT in infinite-wait mode
+        if (!infinite_wait &&
+            std::chrono::steady_clock::now() - last_data_time > timeout)
+        {
+            throw NetconfException(
+                "Device failed to send data within " +
+                std::to_string(read_timeout) +
+                "s, try increasing read_timeout"
+            );
+        }
+
+        int nbytes = libssh2_channel_read(chan, buffer, sizeof(buffer));
+        if (nbytes == LIBSSH2_ERROR_EAGAIN) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        if (nbytes < 0) {
+            char* err_msg = nullptr;
+            libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+            throw NetconfException(
+                "Error reading from channel: " +
+                std::string(err_msg ? err_msg : "Unknown error")
+            );
+        }
+        // nbytes > 0
+        response.append(buffer, nbytes);
+        std::string new_data(buffer, nbytes);
+
+        // keep last 7 chars from previous plus the new data to search for end-marker
+        if (response.size() >= 7) {
+            tail = response.substr(response.size() - 7);
+        } else {
+            tail = response;
+        }
+        if ((tail + new_data).find("]]>]]>") != std::string::npos) {
+            break;
+        }
+
+        // we got some real data, reset our timeout clock
+        last_data_time = std::chrono::steady_clock::now();
+    }
+
+    return response;
 }
 
 // ----------------------- Build & Send Helpers -------------------------

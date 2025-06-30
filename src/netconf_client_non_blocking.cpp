@@ -1,4 +1,5 @@
 #include "netconf_client.hpp"
+#include "notification_reactor_manager.hpp"
 #include <stdexcept>
 #include <iostream>
 #include <future>
@@ -15,6 +16,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
+#include <errno.h>
 
 bool NetconfClient::connect_non_blocking() {
     if (is_connected_) {
@@ -262,13 +264,16 @@ bool NetconfClient::connect_notification_non_blocking() {
     }
 
     int rc = 0;
-    int user_given_timeout = connect_timeout_; // TO DO: Modify to accept this value from user
-    int current_timeout = 0;
-    int socket_connect_timeout = user_given_timeout > 10 ? user_given_timeout *100 : 2000;
-    auto start_time = std::chrono::steady_clock::now();
-    auto connect_timeout = std::chrono::seconds(user_given_timeout);
+    int user_given_timeout    = connect_timeout_;
+    int current_timeout       = 0;
+    int socket_connect_timeout= user_given_timeout > 10
+                                ? user_given_timeout * 100
+                                : 2000;
+    auto start_time    = std::chrono::steady_clock::now();
+    auto connect_deadline = std::chrono::seconds(user_given_timeout);
+
     try {
-        // Initialize a libssh2 session and store it in our RAII wrapper.
+        // ——— Initialize libssh2 session —————————————
         LIBSSH2_SESSION* raw_session = libssh2_session_init();
         if (!raw_session) {
             throw NetconfException("Failed to initialize libssh2 session");
@@ -276,79 +281,74 @@ bool NetconfClient::connect_notification_non_blocking() {
         notif_session_.reset(raw_session);
         libssh2_session_set_blocking(notif_session_.get(), 0);
 
-        // Resolve hostname.
-        std::string resolved_ip;
+        // ——— Resolve hostname in non-blocking fashion —————
         {
             std::lock_guard<std::mutex> dns_lock(dns_mutex_);
             current_timeout = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::seconds>(
-                    connect_timeout - (std::chrono::steady_clock::now() - start_time)
+                    connect_deadline - (std::chrono::steady_clock::now() - start_time)
                 ).count()
             );
             if (current_timeout <= 0) {
-                throw NetconfConnectionRefused(
-                    "Connection failed to " + hostname_ + " try increasing connection timeout"
-                );
+                throw NetconfConnectionRefused("Connection timed out resolving " + hostname_);
             }
-            resolved_ip = resolve_hostname_non_blocking(hostname_, current_timeout);
-            if (resolved_ip.empty()) {
+            resolved_host_ = resolve_hostname_non_blocking(hostname_, current_timeout);
+            if (resolved_host_.empty()) {
                 throw NetconfConnectionRefused("Failed to resolve hostname: " + hostname_);
             }
         }
-        resolved_host_ = resolved_ip;
-        current_timeout = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::seconds>(
-                connect_timeout - (std::chrono::steady_clock::now() - start_time)
-            ).count()
-        );
-        if (current_timeout <= 0) {
-            throw NetconfConnectionRefused(
-                "Connection failed to " + hostname_ + " try increasing connection timeout"
-            );
-        }
-        // Create and configure the socket.
+
+        // ——— Create, configure, and make the socket non-blocking ——
         int raw_sock = socket(AF_INET, SOCK_STREAM, 0);
         if (raw_sock < 0) {
             throw NetconfException("Failed to create socket: " + std::string(strerror(errno)));
         }
         notif_socket_.reset(raw_sock);
-        int option_value = 1;
-        if (setsockopt(notif_socket_.get(), SOL_SOCKET, SO_REUSEADDR, &option_value, sizeof(option_value)) < 0) {
-            throw NetconfException("Failed to set socket options: " + std::string(strerror(errno)));
+
+        int opt = 1;
+        if (setsockopt(notif_socket_.get(), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+            throw NetconfException("Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
         }
         int flags = fcntl(notif_socket_.get(), F_GETFL, 0);
-        if (flags < 0 || fcntl(notif_socket_.get(), F_SETFL, flags | O_NONBLOCK) < 0) {
+        if (flags < 0
+            || fcntl(notif_socket_.get(), F_SETFL, flags | O_NONBLOCK) < 0)
+        {
             throw NetconfException("Failed to set non-blocking mode: " + std::string(strerror(errno)));
         }
-        // Prepare server address.
+
+        // ——— Perform non-blocking TCP connect ——————————————
         struct sockaddr_in server_addr{};
         server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port_);
-        if (inet_pton(AF_INET, resolved_ip.c_str(), &server_addr.sin_addr) <= 0) {
-            throw NetconfConnectionRefused("Invalid IP address: " + resolved_ip);
+        server_addr.sin_port   = htons(port_);
+        if (inet_pton(AF_INET, resolved_host_.c_str(), &server_addr.sin_addr) <= 0) {
+            throw NetconfConnectionRefused("Invalid IP address: " + resolved_host_);
         }
-        rc = ::connect(notif_socket_.get(), reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr));
+
+        rc = ::connect(notif_socket_.get(),
+                       reinterpret_cast<struct sockaddr*>(&server_addr),
+                       sizeof(server_addr));
         if (rc < 0 && errno != EINPROGRESS) {
             throw NetconfConnectionRefused("Connection failed: " + std::string(strerror(errno)));
         }
-        // Wait for TCP connection completion.
-        struct pollfd pfd{};
-        pfd.fd = notif_socket_.get();
-        pfd.events = POLLOUT;
-        int poll_result = poll(
-            &pfd,
-            1,
-            socket_connect_timeout
-        );
-        if (poll_result <= 0) {
-            throw NetconfConnectionRefused(poll_result == 0 ?
-                "Unable to open socket for " + hostname_ + " " : "Poll error: " + std::string(strerror(errno)));
+
+        // Wait for TCP connect completion
+        struct pollfd pfd{ notif_socket_.get(), POLLOUT, 0 };
+        int poll_ret = poll(&pfd, 1, socket_connect_timeout);
+        if (poll_ret <= 0) {
+            throw NetconfConnectionRefused(
+                poll_ret == 0
+                ? "Timeout establishing TCP connection"
+                : "Poll error: " + std::string(strerror(errno))
+            );
         }
-        int error = 0;
-        socklen_t len = sizeof(error);
-        if (getsockopt(notif_socket_.get(), SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
-            throw NetconfConnectionRefused("Connection failed: " +
-                std::string(error != 0 ? strerror(error) : strerror(errno)));
+        int so_error = 0; socklen_t len = sizeof(so_error);
+        if (getsockopt(notif_socket_.get(), SOL_SOCKET, SO_ERROR, &so_error, &len) < 0
+            || so_error != 0)
+        {
+            throw NetconfConnectionRefused(
+                "TCP connect failed: " +
+                std::string(so_error ? strerror(so_error) : strerror(errno))
+            );
         }
 
         // Perform the SSH handshake.
@@ -359,7 +359,7 @@ bool NetconfClient::connect_notification_non_blocking() {
         rc = LIBSSH2_ERROR_EAGAIN;
         current_timeout = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
-                connect_timeout - (std::chrono::steady_clock::now() - start_time)
+                connect_deadline - (std::chrono::steady_clock::now() - start_time)
             ).count()
         );
         if (current_timeout <= 0) {
@@ -397,7 +397,7 @@ bool NetconfClient::connect_notification_non_blocking() {
         rc = LIBSSH2_ERROR_EAGAIN;
         current_timeout = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
-                connect_timeout - (std::chrono::steady_clock::now() - start_time)
+                connect_deadline - (std::chrono::steady_clock::now() - start_time)
             ).count()
         );
         if (current_timeout <= 0) {
@@ -423,7 +423,7 @@ bool NetconfClient::connect_notification_non_blocking() {
         }
         current_timeout = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
-                connect_timeout - (std::chrono::steady_clock::now() - start_time)
+                connect_deadline - (std::chrono::steady_clock::now() - start_time)
             ).count()
         );
         if (current_timeout <= 0) {
@@ -455,7 +455,7 @@ bool NetconfClient::connect_notification_non_blocking() {
         rc = LIBSSH2_ERROR_EAGAIN;
         current_timeout = static_cast<int>(
             std::chrono::duration_cast<std::chrono::seconds>(
-                connect_timeout - (std::chrono::steady_clock::now() - start_time)
+                connect_deadline - (std::chrono::steady_clock::now() - start_time)
             ).count()
         );
         if (current_timeout <= 0) {
@@ -480,35 +480,87 @@ bool NetconfClient::connect_notification_non_blocking() {
         }
 
         // Now complete the NETCONF hello exchange.
-        std::string server_hello = read_until_eom_non_blocking(notif_channel_.get(), notif_session_.get(), read_timeout_);
-        if (server_hello.find("capabilities") != std::string::npos) {
-            send_client_hello_non_blocking(notif_channel_.get(), notif_session_.get(), notif_socket_.get());
-        } else {
-            throw NetconfException("Didn't receive proper NETCONF 'hello' message from device.");
+        std::string server_hello = read_until_eom_non_blocking(
+            notif_channel_.get(),
+            notif_session_.get(),
+            read_timeout_
+        );
+        if (server_hello.find("capabilities") == std::string::npos) {
+            throw NetconfException("Invalid NETCONF <hello> from server");
         }
+        send_client_hello_non_blocking(
+            notif_channel_.get(),
+            notif_session_.get(),
+            notif_socket_.get()
+        );
+
+        // ——— REGISTER WITH GLOBAL REACTOR ——————————————
+        NotificationReactorManager::instance().add(notif_socket_.get(), this);
+
         notif_is_connected_ = true;
         notif_is_blocking_ = false;
         return true;
     }
-    catch (const std::exception& err) {
-        // RAII wrappers ensure that notif_session_, notif_channel_, and notif_socket_ are cleaned up automatically.
-        throw NetconfConnectionRefused("Unable to connect to device: " + std::string(err.what()));
+    catch (const std::exception& e) {
+        throw NetconfConnectionRefused("Unable to connect to device: " + std::string(e.what()));
     }
+}
+
+void NetconfClient::on_notification_ready(int fd) {
+    auto xml = read_until_eom_non_blocking(
+        notif_channel_.get(),
+        notif_session_.get(),
+        -1
+    );
+    {
+        std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+        _notif_queue.push_back(std::move(xml));
+    }
+    _notif_queue_cv.notify_one();
 }
 
 std::string NetconfClient::send_rpc_non_blocking(const std::string& rpc) {
     return send_rpc_non_blocking_func(channel_.get(), session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::receive_notification_non_blocking() {
+std::string NetconfClient::next_notification() {
     if (!notif_channel_) {
         throw NetconfException("Notification channel not open.");
     }
     if (!notif_session_) {
         throw NetconfException("Notification session not open.");
     }
-    return read_until_eom_non_blocking(notif_channel_.get(), notif_session_.get(), read_timeout_);
+    std::unique_lock<std::mutex> lk(_notif_queue_mtx);
+    bool got_data = _notif_queue_cv.wait_for(
+        lk,
+        std::chrono::milliseconds(10),
+        [&]{ return !_notif_queue.empty(); }
+    );
+    if (!got_data) {
+        lk.unlock();
+        return std::string{};
+    }
+    std::string xml = std::move(_notif_queue.front());
+    _notif_queue.pop_front();
+    lk.unlock();
+    return xml;
 }
+
+
+bool NetconfClient::is_subscription_active() const {
+    if (!notif_is_connected_) return false;
+    if (!notif_channel_) return false;
+    if (!notif_session_) return false;
+
+    int fd = notif_socket_.get();
+    if (fd < 0) return false;
+
+    int flags = fcntl(fd, F_GETFD);
+    if (flags < 0 && errno == EBADF) return false;
+
+    return true;
+}
+
 
 std::string NetconfClient::get_non_blocking(const std::string& filter) {
     std::string rpc =

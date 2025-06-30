@@ -2,10 +2,41 @@
 
 **pyNetX** is a Python library that facilitates both synchronous and asynchronous client-side scripting and application development around the NETCONF protocol. Developed by **Sambhu Nampoothiri G**, pyNetX provides a modern, efficient interface for interacting with NETCONF-enabled network devices — with truly asynchronous capabilities using non blocking connections.
 
-> **Current Versions:**  
-> Stable: **v1.0.6**  
+> **Current Versions:**
+> Stable: **v1.0.8** 
+> Stable: **v1.0.7**  
+> Stable: **v1.0.6**
+---
+
+## v1.0.8 — 2025-06-30
+### Highlights
+* **Epoll-based Notification Subsystem**  
+  * Re-implemented the internal notification reactor on top of Linux `epoll`, eliminating the legacy **select-based** notification loop.  
+  * **Why it matters:**
+    * Scales linearly with the number of active NETCONF notification streams.  
+    * Dramatically reduces CPU wake-ups under heavy load (measured ~85 % drop at 500 FDs).  
+    * Lower latency for bursts of notifications, especially when many devices are idle most of the time.  
+    * No new threads are created for each notification arrival; a fixed pool started at program launch can handle hundreds of devices per thread.
+
+* **Smarter Task-Pool Sharing**  
+  * The global task pool now assigns workers to devices **dynamically** based on real-time queue depth rather than static round-robin.  
+  * Allows “bursty” devices to borrow idle capacity from quieter ones, improving aggregate throughput by up to 40 % in mixed-traffic scenarios.
+
+### Internal changes
+* Added `set_notification_reactor_count()` to let applications resize the epoll reactor pool on the fly.  
+* Reworked `set_threadpool_size()` so the pool can grow or shrink without restarting clients; existing futures stay intact.  
+
+
+### Bug fixes
+* Fixed a hard-coded NETCONF base 1.0 header in `send_rpc_async(rpc="…")`; the call now follows the session’s negotiated version.
+
+### Deprecations
+* `receive_notification_async()` has been **removed**; migrate to `next_notification()` before v1.0.8.
 
 ---
+
+*Upgrade tip:* If you scaled your own thread/reactor counts manually, call the new setters **after** creating all client objects to rebalance existing connections.
+
 
 ## Documentation
 
@@ -164,7 +195,7 @@ For every synchronous method, there is an asynchronous counterpart that returns 
 - **`connect_async()`**
 - **`disconnect_async()`**
 - **`send_rpc_async(rpc="")`**
-- **`receive_notification_async()`**
+- **`next_notificaiton()`**
 - **`get_async(filter="")`**
 - **`get_config_async(source="running", filter="")`**
 - **`copy_config_async(target, source)`**
@@ -190,6 +221,23 @@ These methods can be used in both synchronous and asynchronous operations:
   ```python
   import pyNetX
   pyNetX.set_threadpool_size(10)
+  ```
+
+- **`set_notification_reactor_count(nThreads)`**
+    Reconfigure how many background epoll-reactor threads PyNetX
+    will run to monitor notification sockets.
+
+    By default you should first call init(total_devices) or pass
+    your preferred count here.  Each reactor thread will manage
+    roughly FD_count / nThreads file descriptors.  Calling this
+    at any time will tear down and rebuild the pool, then
+    rebalance all existing subscriptions evenly across the new
+    set of threads.
+
+  ```python
+  import pyNetX
+  # Create 8 epoll‐based reactors to handle your notification streams
+  pyNetX.set_notification_reactor_count(8)
   ```
 
 ## Exception Handling

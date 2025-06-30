@@ -417,28 +417,30 @@ Sends a custom RPC asynchronously and awaits the response.
 
 .. code-block:: python
 
-   rpc_command = \"\"\"<get><filter type='subtree'><interfaces/></filter></get>\"\"\"
+   rpc_command = '<rpc message-id="102" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">' + rpc + '</rpc>'
    reply = await client.send_rpc_async(rpc_command)
    print("Async RPC reply:", reply)
 
 
-receive_notification_async()
+next_notification()
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Description**  
-Asynchronously waits for a single notification from the device.
+Asynchronously tries to retrieve NETCONF notification data 
+( can be a complete notification or partial notification string ) from 
+NETCONF subscribed channel
 
 **Parameters**  
 - None
 
 **Returns**  
-- A string with the notification XML or None on timeout.
+- A string with the notification XML or piece of a NETCONF notification or None on timeout.
 
 **Example**  
 
 .. code-block:: python
 
-   notification = await client.receive_notification_async()
+   notification = await client.next_notification()
    print("Async notification received:", notification)
 
 
@@ -707,6 +709,26 @@ Sets the number of threads in the shared task pool.
 
    import pyNetX
    pyNetX.set_threadpool_size(10) # Creates 10 threads in the shared task pool.
+
+
+set_notification_reactor_count(nThreads)
+~~~~~~~~~~~~~~
+
+**Description**  
+Sets the number of threads in the notification reactor pool.
+
+**Parameters**  
+- **target** (int): Number of threads present in reactor pool.
+
+**Returns**  
+- None.
+
+**Example**  
+
+.. code-block:: python
+
+   import pyNetX
+   pyNetX.set_notification_reactor_count(10) # Creates 10 threads in the notification reactor pool.
 
 
 Common Exceptions

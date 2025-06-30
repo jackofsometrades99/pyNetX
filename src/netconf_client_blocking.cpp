@@ -1,4 +1,6 @@
 #include "netconf_client.hpp"
+#include "notification_reactor_manager.hpp"
+#include "notification_reactor.hpp"
 #include <stdexcept>
 #include <iostream>
 #include <future>
@@ -17,30 +19,39 @@
 #include <unistd.h>
 
 void NetconfClient::disconnect() {
-    // RAII wrappers' destructors will clean up the resources.
+    // Clean up RPC session
     channel_.reset();
     session_.reset();
     socket_.reset();
+
     if (notif_channel_) {
+        // Unregister notification socket from the global reactor
+        NotificationReactorManager::instance().remove(notif_socket_.get());
+
+        // Clean up notification session
         notif_channel_.reset();
         notif_session_.reset();
         notif_socket_.reset();
-        notif_is_blocking_ = false;
-        notif_is_connected_ = false;
+
+        notif_is_blocking_   = false;
+        notif_is_connected_  = false;
     }
-    is_blocking_ = false;
-    is_connected_ = false;
+
+    is_blocking_   = false;
+    is_connected_  = false;
 }
 
 void NetconfClient::delete_notification_session() {
     if (notif_channel_) {
+        NotificationReactorManager::instance().remove(notif_socket_.get());
         notif_channel_.reset();
         notif_session_.reset();
         notif_socket_.reset();
     }
-    notif_is_blocking_ = false;
-    notif_is_connected_ = false;
+    notif_is_blocking_   = false;
+    notif_is_connected_  = false;
 }
+
 
 bool NetconfClient::connect_blocking() {
     if (is_connected_) {
