@@ -8,7 +8,7 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="pyNetX",
-    version="1.0.8",
+    version="1.0.9",
     description="NETCONF client with truly async capabilities",
     long_description=long_description,
     long_description_content_type="text/markdown",

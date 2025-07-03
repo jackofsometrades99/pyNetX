@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyNetX"
-version = "1.0.8"
+version = "1.0.9"
 description = "NETCONF client with truly async capabilities"
 readme = "README.md"
 requires-python = ">=3.11"
