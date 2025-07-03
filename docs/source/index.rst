@@ -1,6 +1,6 @@
 .. pyNetX documentation master file
 
-Welcome to pyNetX’s documentation!
+Welcome to pyNetX's documentation!
 ==================================
 
 .. toctree::

@@ -3,10 +3,28 @@
 **pyNetX** is a Python library that facilitates both synchronous and asynchronous client-side scripting and application development around the NETCONF protocol. Developed by **Sambhu Nampoothiri G**, pyNetX provides a modern, efficient interface for interacting with NETCONF-enabled network devices — with truly asynchronous capabilities using non blocking connections.
 
 > **Current Versions:**
-> Stable: **v1.0.8** 
-> Stable: **v1.0.7**  
-> Stable: **v1.0.6**
+> Stable: **v1.0.9** 
 ---
+
+## v1.0.9 — 2025-07-03
+### Highlights
+* **Cancellation-safe asyncio bridge**  
+  * Added a guard (`fut_pending()`) in the C++ wrapper so callbacks **skip
+    `set_result()`/`set_exception()` if the Python `asyncio.Future` has already been cancelled or finished**.  
+  * **Why it matters:** eliminates sporadic  
+    `asyncio.exceptions.InvalidStateError: invalid state` seen when a running
+    task is cancelled or times out while waiting for an RPC reply.
+### Internal changes 
+* Minor code changes in the pybind11 wrapper lambdas.
+### Bug fixes
+* No functional regressions introduced by v1.0.8.
+
+### Upgrade notes
+* **Safe to drop-in.** There are no API changes compared with v1.0.8.
+* If you previously installed pyNetX from Test PyPI, grab the new wheel with  
+  ```bash
+  pip install pyNetX==1.0.9
+
 
 ## v1.0.8 — 2025-06-30
 ### Highlights
@@ -15,12 +33,13 @@
   * **Why it matters:**
     * Scales linearly with the number of active NETCONF notification streams.  
     * Dramatically reduces CPU wake-ups under heavy load (measured ~85 % drop at 500 FDs).  
-    * Lower latency for bursts of notifications, especially when many devices are idle most of the time.  
+    * Lower latency for bursts of notifications, especially when many devices are idle most of the time.
     * No new threads are created for each notification arrival; a fixed pool started at program launch can handle hundreds of devices per thread.
 
 * **Smarter Task-Pool Sharing**  
   * The global task pool now assigns workers to devices **dynamically** based on real-time queue depth rather than static round-robin.  
-  * Allows “bursty” devices to borrow idle capacity from quieter ones, improving aggregate throughput by up to 40 % in mixed-traffic scenarios.
+  * This allows tasks to be spread across queues more efficiently as per current load,
+  minimizing task queue depth and improving aggregate throughput by up to 40 % in mixed-traffic scenarios.
 
 ### Internal changes
 * Added `set_notification_reactor_count()` to let applications resize the epoll reactor pool on the fly.  
@@ -28,7 +47,7 @@
 
 
 ### Bug fixes
-* Fixed a hard-coded NETCONF base 1.0 header in `send_rpc_async(rpc="…")`; the call now follows the session’s negotiated version.
+* Fixed a hard-coded NETCONF base 1.0 header in `send_rpc_async(rpc="…")`; the call now follows the user mentioned version.
 
 ### Deprecations
 * `receive_notification_async()` has been **removed**; migrate to `next_notification()` before v1.0.8.

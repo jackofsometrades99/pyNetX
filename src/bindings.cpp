@@ -28,6 +28,12 @@ void register_exceptions(py::module_ &m) {
 }
 
 
+inline bool fut_pending(const py::object &f)
+{
+    return !(f.attr("done")().cast<bool>());
+}
+
+
 // ---- Utility: wrap std::future<T> into an asyncio Future ----
 template <typename T>
 py::object wrap_future(std::future<T> fut)
@@ -46,10 +52,17 @@ py::object wrap_future(std::future<T> fut)
         }
         {
             py::gil_scoped_acquire acquire;
+            if (!fut_pending(*py_future_ptr)) {
+                loop_ptr.reset();
+                py_future_ptr.reset();
+                return;
+            }
             try {
                 T result = sfut.get();
                 auto callback = py::cpp_function([py_future_ptr, result](py::args) {
-                    (*py_future_ptr).attr("set_result")(result);
+                    if (fut_pending(*py_future_ptr)){
+                        (*py_future_ptr).attr("set_result")(result);
+                    }
                 });
                 (*loop_ptr).attr("call_soon_threadsafe")(callback);
             } catch (const std::exception &e) {
@@ -57,7 +70,9 @@ py::object wrap_future(std::future<T> fut)
                 auto builtins = py::module::import("builtins");
                 py::object exception_obj = builtins.attr("ValueError")(msg);
                 auto callback = py::cpp_function([py_future_ptr, exception_obj](py::args) {
-                    (*py_future_ptr).attr("set_exception")(exception_obj);
+                    if (fut_pending(*py_future_ptr)){
+                        (*py_future_ptr).attr("set_exception")(exception_obj);
+                    }
                 });
                 (*loop_ptr).attr("call_soon_threadsafe")(callback);
             }
@@ -89,10 +104,17 @@ py::object wrap_future<void>(std::future<void> fut)
         }
         {
             py::gil_scoped_acquire acquire;
+            if (!fut_pending(*py_future_ptr)) {
+                loop_ptr.reset();
+                py_future_ptr.reset();
+                return;
+            }
             try {
                 sfut.get();
                 auto callback = py::cpp_function([py_future_ptr](py::args) {
-                    (*py_future_ptr).attr("set_result")(py::none());
+                    if (fut_pending(*py_future_ptr)){
+                        (*py_future_ptr).attr("set_result")(py::none());
+                    }
                 });
                 (*loop_ptr).attr("call_soon_threadsafe")(callback);
             } catch (const std::exception &e) {
@@ -100,7 +122,9 @@ py::object wrap_future<void>(std::future<void> fut)
                 auto builtins = py::module::import("builtins");
                 py::object exception_obj = builtins.attr("ValueError")(msg);
                 auto callback = py::cpp_function([py_future_ptr, exception_obj](py::args) {
-                    (*py_future_ptr).attr("set_exception")(exception_obj);
+                    if (fut_pending(*py_future_ptr)){
+                        (*py_future_ptr).attr("set_exception")(exception_obj);
+                    }
                 });
                 (*loop_ptr).attr("call_soon_threadsafe")(callback);
             }
