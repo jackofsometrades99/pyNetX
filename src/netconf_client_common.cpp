@@ -20,14 +20,17 @@
 
 
 // ----------------------- NetconfClient Implementation -------------------------
-NetconfClient::NetconfClient(const std::string& hostname, int port,
-                             const std::string& username, const std::string& password,
-                             const std::string& key_path, int connect_timeout, int read_timeout)
+NetconfClient::NetconfClient(
+    const std::string& hostname, int port,
+    const std::string& username, const std::string& password,
+    const std::string& key_path, int connect_timeout, int read_timeout,
+    int notif_queue_size
+)
     : hostname_(hostname), port_(port),
       username_(username), password_(password), key_path_(key_path),
       session_(nullptr), channel_(nullptr), notif_session_(nullptr),
       notif_channel_(nullptr), connect_timeout_(connect_timeout),
-      read_timeout_(read_timeout)
+      read_timeout_(read_timeout), _notif_queue_max_size_(notif_queue_size)
 {
 }
 

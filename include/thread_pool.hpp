@@ -6,6 +6,7 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <iostream>
 #include <condition_variable>
 #include <future>
 #include <functional>
@@ -75,7 +76,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(worker.mtx);
             if (stop_.load()) {
-                throw std::runtime_error("ThreadPool is stopped");
+                std::cout << "ThreadPool is stopped" << std::endl;
             }
             worker.tasks.emplace([taskPtr](){ (*taskPtr)(); });
             // increment to account for this new task

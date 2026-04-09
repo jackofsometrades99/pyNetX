@@ -42,52 +42,22 @@ void NetconfClient::check_for_rpc_error(const std::string& xml_reply) {
 // ----------------------- Hostname Resolution Helpers -------------------------
 
 std::string NetconfClient::resolve_hostname_blocking(
-    const std::string &hostname) {
-    // Blocking version: simply call getaddrinfo and return the first IP address found.
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
-    hints.ai_socktype = SOCK_STREAM;
-    
-    struct addrinfo *res = nullptr;
-    int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &res);
-    if (err != 0 || res == nullptr) {
-        return "";
-    }
+    const std::string &hostname
+)   {
+        try {
+            // Blocking version: simply call getaddrinfo and return the first IP address found.
+            struct addrinfo hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
+            hints.ai_socktype = SOCK_STREAM;
+            
+            struct addrinfo *res = nullptr;
+            int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &res);
+            if (err != 0 || res == nullptr) {
+                return "";
+            }
 
-    char ip[INET6_ADDRSTRLEN];
-    if (res->ai_family == AF_INET) {
-        struct sockaddr_in *addr = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
-        inet_ntop(AF_INET, &(addr->sin_addr), ip, sizeof(ip));
-    } else if (res->ai_family == AF_INET6) {
-        struct sockaddr_in6 *addr6 = reinterpret_cast<struct sockaddr_in6*>(res->ai_addr);
-        inet_ntop(AF_INET6, &(addr6->sin6_addr), ip, sizeof(ip));
-    } else {
-        freeaddrinfo(res);
-        return "";
-    }
-    
-    std::string result(ip);
-    freeaddrinfo(res);
-    return result;
-}
-
-std::string NetconfClient::resolve_hostname_non_blocking(
-    const std::string &hostname,
-    int timeout_seconds) {
-    std::promise<std::string> prom;
-    auto fut = prom.get_future();
-    // Capture p by value (using move) so the thread has its own copy of the promise.
-    std::thread resolver([p = std::move(prom), hostname]() mutable {
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
-        hints.ai_socktype = SOCK_STREAM;
-        struct addrinfo *res = nullptr;
-        int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &res);
-        if (err == 0 && res != nullptr) {
             char ip[INET6_ADDRSTRLEN];
-            // Use the first result; check for IPv4 or IPv6.
             if (res->ai_family == AF_INET) {
                 struct sockaddr_in *addr = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
                 inet_ntop(AF_INET, &(addr->sin_addr), ip, sizeof(ip));
@@ -96,22 +66,62 @@ std::string NetconfClient::resolve_hostname_non_blocking(
                 inet_ntop(AF_INET6, &(addr6->sin6_addr), ip, sizeof(ip));
             } else {
                 freeaddrinfo(res);
-                p.set_value("");
-                return;
+                return "";
             }
+            
+            std::string result(ip);
             freeaddrinfo(res);
-            p.set_value(std::string(ip));
-        } else {
-            p.set_value("");
+            return result;
+        } catch (const std::exception& e) {
+            throw NetconfException("Error occured while resolving hostname: " + std::string(e.what()));
         }
-    });
-    // Wait for the resolution to complete or timeout.
-    if (fut.wait_for(std::chrono::seconds(timeout_seconds)) == std::future_status::ready) {
-        resolver.join();
-        return fut.get();
-    } else {
-        resolver.detach(); // Let it run; we won’t use its result.
-        return "";
+}
+
+std::string NetconfClient::resolve_hostname_non_blocking(
+    const std::string &hostname,
+    int timeout_seconds
+) {
+    try {
+        std::promise<std::string> prom;
+        auto fut = prom.get_future();
+        // Capture p by value (using move) so the thread has its own copy of the promise.
+        std::thread resolver([p = std::move(prom), hostname]() mutable {
+            struct addrinfo hints;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
+            hints.ai_socktype = SOCK_STREAM;
+            struct addrinfo *res = nullptr;
+            int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &res);
+            if (err == 0 && res != nullptr) {
+                char ip[INET6_ADDRSTRLEN];
+                // Use the first result; check for IPv4 or IPv6.
+                if (res->ai_family == AF_INET) {
+                    struct sockaddr_in *addr = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
+                    inet_ntop(AF_INET, &(addr->sin_addr), ip, sizeof(ip));
+                } else if (res->ai_family == AF_INET6) {
+                    struct sockaddr_in6 *addr6 = reinterpret_cast<struct sockaddr_in6*>(res->ai_addr);
+                    inet_ntop(AF_INET6, &(addr6->sin6_addr), ip, sizeof(ip));
+                } else {
+                    freeaddrinfo(res);
+                    p.set_value("");
+                    return;
+                }
+                freeaddrinfo(res);
+                p.set_value(std::string(ip));
+            } else {
+                p.set_value("");
+            }
+        });
+        // Wait for the resolution to complete or timeout.
+        if (fut.wait_for(std::chrono::seconds(timeout_seconds)) == std::future_status::ready) {
+            resolver.join();
+            return fut.get();
+        } else {
+            resolver.detach(); // Let it run; we won’t use its result.
+            return "";
+        }
+    } catch (const std::exception& e) {
+        throw NetconfException("Error occured while resolving hostname: " + std::string(e.what()));
     }
 }
 
@@ -121,7 +131,8 @@ std::string NetconfClient::resolve_hostname_non_blocking(
 std::string NetconfClient::read_until_eom_non_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
-    int read_timeout) {
+    int read_timeout
+) {
         std::string response;
         std::string tail;
         char buffer[1024];
@@ -130,52 +141,57 @@ std::string NetconfClient::read_until_eom_non_blocking(
         const auto timeout = std::chrono::seconds(infinite_wait ? 0 : read_timeout);
 
         while (true) {
-            if (!chan) {
-                throw NetconfException("Operation cancelled: connection object is missing");
-            }
-            if (!infinite_wait && std::chrono::steady_clock::now() - last_data_time > timeout) {
-                throw NetconfException("Device failed to send data , try increasing read_timeout");
-            }
-            int nbytes = libssh2_channel_read_nonblocking(chan, buffer, sizeof(buffer), 0);
-            if (!infinite_wait){
+            try {
+                if (!chan) {
+                    throw NetconfException("Operation cancelled: connection object is missing");
+                }
+                if (!infinite_wait && std::chrono::steady_clock::now() - last_data_time > timeout) {
+                    throw NetconfException("Device failed to send data , try increasing read_timeout");
+                }
+                int nbytes = libssh2_channel_read_nonblocking(chan, buffer, sizeof(buffer), 0);
+                if (!infinite_wait){
 
-                if (nbytes == LIBSSH2_ERROR_EAGAIN) {
-                    std::this_thread::yield();
-                    continue;
-                } else if (nbytes < 0) {
-                    char* err_msg = nullptr;
-                    libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-                    throw NetconfException("Error reading from channel: " +
-                                            std::string(err_msg ? err_msg : "Unknown error"));
-                } else if (nbytes > 0) {
-                    response.append(buffer, nbytes);
-                    std::string new_data(buffer, nbytes);
-                    if (response.size() >= 7) {
-                        tail = response.substr(response.size() - 7, 7);
-                    } else {
-                        tail = response;
+                    if (nbytes == LIBSSH2_ERROR_EAGAIN) {
+                        std::this_thread::yield();
+                        continue;
+                    } else if (nbytes < 0) {
+                        char* err_msg = nullptr;
+                        libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                        throw NetconfException("Error reading from channel: " +
+                                                std::string(err_msg ? err_msg : "Unknown error"));
+                    } else if (nbytes > 0) {
+                        response.append(buffer, nbytes);
+                        std::string new_data(buffer, nbytes);
+                        if (response.size() >= 7) {
+                            tail = response.substr(response.size() - 7, 7);
+                        } else {
+                            tail = response;
+                        }
+                        std::string check_str = tail + new_data;
+                        if (check_str.find("]]>]]>") != std::string::npos) {
+                            break;
+                        }
+                        last_data_time = std::chrono::steady_clock::now();
+                        continue;
                     }
-                    std::string check_str = tail + new_data;
-                    if (check_str.find("]]>]]>") != std::string::npos) {
+                } else {
+                    if (nbytes == LIBSSH2_ERROR_EAGAIN) {
                         break;
+                    } else if (nbytes < 0) {
+                        char* err_msg = nullptr;
+                        libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                        throw NetconfException(
+                            "Error reading from channel: " + std::string(err_msg ? err_msg : "Unknown error")
+                        );
+                    } else if (nbytes > 0) {
+                        response.append(buffer, nbytes);
+                        continue;
                     }
-                    last_data_time = std::chrono::steady_clock::now();
-                    continue;
                 }
-            } else {
-                if (nbytes == LIBSSH2_ERROR_EAGAIN) {
-                    break;
-                } else if (nbytes < 0) {
-                    char* err_msg = nullptr;
-                    libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-                    throw NetconfException("Error reading from channel: " +
-                                            std::string(err_msg ? err_msg : "Unknown error"));
-                } else if (nbytes > 0) {
-                    response.append(buffer, nbytes);
-                    continue;
-                }
+            } catch (const std::exception& e) {
+                throw NetconfException("Error occured while reading from channel: " + std::string(e.what()));
             }
-        }
+        }   
         return response;
 }
 
@@ -183,8 +199,8 @@ std::string NetconfClient::read_until_eom_non_blocking(
 std::string NetconfClient::read_until_eom_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
-    int read_timeout)
-{
+    int read_timeout
+) {
     std::string response;
     std::string tail;
     auto last_data_time = std::chrono::steady_clock::now();
@@ -195,54 +211,56 @@ std::string NetconfClient::read_until_eom_blocking(
 
     // If not infinite, prepare a std::chrono timeout duration
     const std::chrono::seconds timeout{ infinite_wait ? 0 : read_timeout };
+    try {
+        while (true) {
+            if (!chan) {
+                throw NetconfException("Operation cancelled: connection object is missing");
+            }
 
-    while (true) {
-        if (!chan) {
-            throw NetconfException("Operation cancelled: connection object is missing");
-        }
+            // Only check elapsed time if we're NOT in infinite-wait mode
+            if (!infinite_wait &&
+                std::chrono::steady_clock::now() - last_data_time > timeout)
+            {
+                throw NetconfException(
+                    "Device failed to send data within " +
+                    std::to_string(read_timeout) +
+                    "s, try increasing read_timeout"
+                );
+            }
 
-        // Only check elapsed time if we're NOT in infinite-wait mode
-        if (!infinite_wait &&
-            std::chrono::steady_clock::now() - last_data_time > timeout)
-        {
-            throw NetconfException(
-                "Device failed to send data within " +
-                std::to_string(read_timeout) +
-                "s, try increasing read_timeout"
-            );
-        }
+            int nbytes = libssh2_channel_read(chan, buffer, sizeof(buffer));
+            if (nbytes == LIBSSH2_ERROR_EAGAIN) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            if (nbytes < 0) {
+                char* err_msg = nullptr;
+                libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                throw NetconfException(
+                    "Error reading from channel: " +
+                    std::string(err_msg ? err_msg : "Unknown error")
+                );
+            }
+            // nbytes > 0
+            response.append(buffer, nbytes);
+            std::string new_data(buffer, nbytes);
 
-        int nbytes = libssh2_channel_read(chan, buffer, sizeof(buffer));
-        if (nbytes == LIBSSH2_ERROR_EAGAIN) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-        if (nbytes < 0) {
-            char* err_msg = nullptr;
-            libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-            throw NetconfException(
-                "Error reading from channel: " +
-                std::string(err_msg ? err_msg : "Unknown error")
-            );
-        }
-        // nbytes > 0
-        response.append(buffer, nbytes);
-        std::string new_data(buffer, nbytes);
+            // keep last 7 chars from previous plus the new data to search for end-marker
+            if (response.size() >= 7) {
+                tail = response.substr(response.size() - 7);
+            } else {
+                tail = response;
+            }
+            if ((tail + new_data).find("]]>]]>") != std::string::npos) {
+                break;
+            }
 
-        // keep last 7 chars from previous plus the new data to search for end-marker
-        if (response.size() >= 7) {
-            tail = response.substr(response.size() - 7);
-        } else {
-            tail = response;
+            // we got some real data, reset our timeout clock
+            last_data_time = std::chrono::steady_clock::now();
         }
-        if ((tail + new_data).find("]]>]]>") != std::string::npos) {
-            break;
-        }
-
-        // we got some real data, reset our timeout clock
-        last_data_time = std::chrono::steady_clock::now();
+    } catch (const std::exception& e) {
+        throw NetconfException("Error occured while reading from channel: " + std::string(e.what()));
     }
-
     return response;
 }
 
@@ -263,33 +281,36 @@ void NetconfClient::send_client_hello_non_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
     int sock_fd
-) 
-{
+) {
     std::string hello = build_client_hello();
     size_t total_written = 0;
     size_t data_length = hello.size();
 
     while (total_written < data_length) {
-        int rc = libssh2_channel_write(chan, hello.data() + total_written, data_length - total_written);
-        if (rc == LIBSSH2_ERROR_EAGAIN) {
-            // Channel is not ready for writing.
-            struct pollfd pfd;
-            int fd = sock_fd;
-            pfd.fd = fd;
-            pfd.events = POLLOUT;
-            int poll_ret = poll(&pfd, 1, 1000); // wait up to 1000 ms
-            if (poll_ret < 0) {
-                throw NetconfException("Poll error during send_client_hello: " + std::string(strerror(errno)));
+        try {
+            int rc = libssh2_channel_write(chan, hello.data() + total_written, data_length - total_written);
+            if (rc == LIBSSH2_ERROR_EAGAIN) {
+                // Channel is not ready for writing.
+                struct pollfd pfd;
+                int fd = sock_fd;
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                int poll_ret = poll(&pfd, 1, 1000); // wait up to 1000 ms
+                if (poll_ret < 0) {
+                    throw NetconfException("Poll error during send_client_hello: " + std::string(strerror(errno)));
+                }
+                // If poll_ret is 0 (timeout), we simply try again.
+                continue;
+            } else if (rc < 0) {
+                char* err_msg = nullptr;
+                libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                throw NetconfException("Failed to send client <hello>: " +
+                                    std::string(err_msg ? err_msg : "Unknown error"));
+            } else {
+                total_written += rc;
             }
-            // If poll_ret is 0 (timeout), we simply try again.
-            continue;
-        } else if (rc < 0) {
-            char* err_msg = nullptr;
-            libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-            throw NetconfException("Failed to send client <hello>: " +
-                                std::string(err_msg ? err_msg : "Unknown error"));
-        } else {
-            total_written += rc;
+        } catch (const std::exception& e) {
+            throw NetconfException("Error occured sending hello message: " + std::string(e.what()));
         }
     }
 }
@@ -297,7 +318,9 @@ void NetconfClient::send_client_hello_non_blocking(
 
 void NetconfClient::send_client_hello_blocking(
     LIBSSH2_CHANNEL *chan,
-    LIBSSH2_SESSION *sess) {
+    LIBSSH2_SESSION *sess
+) {
+    try {
         std::string hello = build_client_hello();
         int rc = libssh2_channel_write(chan, hello.c_str(), hello.size());
         if (rc < 0) {
@@ -306,13 +329,18 @@ void NetconfClient::send_client_hello_blocking(
             throw NetconfException("Failed to send client <hello>: " +
                                 std::string(err_msg ? err_msg : "Unknown error"));
         }
+    } catch (const std::exception& e) {
+        throw NetconfException("Error occured while sending hello message: " + std::string(e.what()));
+    }
 }
 
 std::string NetconfClient::send_rpc_blocking_func(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
     const std::string& rpc,
-    int read_timeout) {
+    int read_timeout
+) {
+    try {
         if (!chan) {
             throw NetconfException("Channel not open.");
         }
@@ -327,6 +355,9 @@ std::string NetconfClient::send_rpc_blocking_func(
         std::string reply = read_until_eom_blocking(chan, sess, read_timeout);
         check_for_rpc_error(reply);
         return reply;
+    } catch (const std::exception& e) {
+        throw NetconfException("Error occured while sending RPC: " + std::string(e.what()));
+    }
 }
 
 std::string NetconfClient::send_rpc_non_blocking_func(
@@ -334,47 +365,52 @@ std::string NetconfClient::send_rpc_non_blocking_func(
     LIBSSH2_SESSION *sess,
     int soc_fd,
     const std::string& rpc,
-    int read_timeout) {
-        if (!chan) {
-            throw NetconfException("Channel not open.");
-        }
-        // Append the end-of-message delimiter.
-        std::string rpc_with_eom = rpc + "\n]]>]]>\n";
-        size_t total_written = 0;
-        size_t data_length = rpc_with_eom.size();
-
-        // Write the entire message in a nonblocking loop.
-        while (total_written < data_length) {
-            int rc = libssh2_channel_write(chan,
-                                        rpc_with_eom.data() + total_written,
-                                        data_length - total_written);
-            if (rc == LIBSSH2_ERROR_EAGAIN) {
-                // If the channel cannot accept more data right now, poll for writability.
-                struct pollfd pfd;
-                int fd = soc_fd;
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
-                int poll_ret = poll(
-                    &pfd,
-                    1,
-                    500
-                );
-                if (poll_ret < 0) {
-                    throw NetconfException("Poll error during write: " + std::string(strerror(errno)));
-                }
-                // If poll_ret == 0, the channel still isn’t ready; loop and try again.
-                continue;
-            } else if (rc < 0) {
-                char* err_msg = nullptr;
-                libssh2_session_last_error(sess, &err_msg, nullptr, 0);
-                throw NetconfException("Failed to send RPC: " +
-                                    std::string(err_msg ? err_msg : "Unknown error"));
-            } else {
-                total_written += rc;
+    int read_timeout
+) {
+        try {
+            if (!chan) {
+                throw NetconfException("Channel not open.");
             }
+            // Append the end-of-message delimiter.
+            std::string rpc_with_eom = rpc + "\n]]>]]>\n";
+            size_t total_written = 0;
+            size_t data_length = rpc_with_eom.size();
+
+            // Write the entire message in a nonblocking loop.
+            while (total_written < data_length) {
+                int rc = libssh2_channel_write(chan,
+                                            rpc_with_eom.data() + total_written,
+                                            data_length - total_written);
+                if (rc == LIBSSH2_ERROR_EAGAIN) {
+                    // If the channel cannot accept more data right now, poll for writability.
+                    struct pollfd pfd;
+                    int fd = soc_fd;
+                    pfd.fd = fd;
+                    pfd.events = POLLOUT;
+                    int poll_ret = poll(
+                        &pfd,
+                        1,
+                        500
+                    );
+                    if (poll_ret < 0) {
+                        throw NetconfException("Poll error during write: " + std::string(strerror(errno)));
+                    }
+                    // If poll_ret == 0, the channel still isn’t ready; loop and try again.
+                    continue;
+                } else if (rc < 0) {
+                    char* err_msg = nullptr;
+                    libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+                    throw NetconfException("Failed to send RPC: " +
+                                        std::string(err_msg ? err_msg : "Unknown error"));
+                } else {
+                    total_written += rc;
+                }
+            }
+            // Once the entire RPC message is written, read the reply.
+            std::string reply = read_until_eom_non_blocking(chan, sess, read_timeout);
+            check_for_rpc_error(reply);
+            return reply;
+        } catch (const std::exception& e) {
+            throw NetconfException("Error occured while sending RPC: " + std::string(e.what()));
         }
-        // Once the entire RPC message is written, read the reply.
-        std::string reply = read_until_eom_non_blocking(chan, sess, read_timeout);
-        check_for_rpc_error(reply);
-        return reply;
 }

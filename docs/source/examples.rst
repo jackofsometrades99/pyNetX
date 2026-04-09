@@ -16,7 +16,13 @@ an infinite loop.
 .. code-block:: python
 
    import time
-   from pyNetX import NetconfClient
+   from pyNetX import (
+        NetconfClient,
+        NetconfConnectionRefusedError,
+        NetconfAuthError,
+        NetconfChannelError,
+        NetconfException
+   )
 
    def sync_multi_device_example():
        # A sample list of devices to manage
@@ -27,40 +33,43 @@ an infinite loop.
 
        while True:
            for dev in devices:
-               client = NetconfClient(
-                   hostname=dev["hostname"],
-                   port=dev["port"],
-                   username=dev["username"],
-                   password=dev["password"]
-               )
+               try:
+                    client = NetconfClient(
+                        hostname=dev["hostname"],
+                        port=dev["port"],
+                        username=dev["username"],
+                        password=dev["password"],
+                        notif_queue_size=100  # Optional: set a queue size for notifications
+                    )
 
-               # Connect to the NETCONF server
-               client.connect_sync()
-               print(f"Connected to {dev['hostname']}")
+                    # Connect to the NETCONF server
+                    client.connect_sync()
+                    print(f"Connected to {dev['hostname']}")
 
-               # Retrieve the running configuration
-               running_config = client.get_config_sync(source="running")
-               print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
+                    # Retrieve the running configuration
+                    running_config = client.get_config_sync(source="running")
+                    print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
 
-               # Subscribe to NETCONF notifications
-               client.subscribe_sync(stream="NETCONF")
-               print(f"Subscribed to notifications on {dev['hostname']}")
+                    # Subscribe to NETCONF notifications
+                    client.subscribe_sync(stream="NETCONF")
+                    print(f"Subscribed to notifications on {dev['hostname']}")
 
-               # Receive notifications for a short duration (e.g., 5 seconds)
-               start_time = time.time()
-               while (time.time() - start_time) < 5:
-                   notification = client.receive_notification_sync()
-                   if notification:
-                       print(f"[{dev['hostname']}] Notification:\n{notification}\n")
+                    # Receive notifications for a short duration (e.g., 5 seconds)
+                    start_time = time.time()
+                    while (time.time() - start_time) < 5:
+                        notification = client.receive_notification_sync()
+                        if notification:
+                            print(f"[{dev['hostname']}] Notification:\n{notification}\n")
 
-               # Disconnect
-               client.disconnect_sync()
-               print(f"Disconnected from {dev['hostname']}\n")
-
+                    # Disconnect
+                    client.disconnect_sync()
+                    print(f"Disconnected from {dev['hostname']}\n")
+                except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+                    # Handle exceptions here
+                    pass
            # Wait for 60 seconds before reconnecting
            print("Waiting 60 seconds before next iteration...\n")
            time.sleep(60)
-
    if __name__ == "__main__":
        sync_multi_device_example()
 
@@ -78,7 +87,13 @@ in parallel (subject to resource and performance constraints).
 .. code-block:: python
 
    import asyncio
-   from pyNetX import NetconfClient
+   from pyNetX import (
+        NetconfClient,
+        NetconfConnectionRefusedError,
+        NetconfAuthError,
+        NetconfChannelError,
+        NetconfException
+   )
 
    async def async_multi_device_example():
        # A sample list of devices to manage
@@ -90,36 +105,40 @@ in parallel (subject to resource and performance constraints).
        while True:
            # Connect to each device, fetch config, subscribe, receive notifications
            for dev in devices:
-               client = NetconfClient(
-                   hostname=dev["hostname"],
-                   port=dev["port"],
-                   username=dev["username"],
-                   password=dev["password"]
-               )
+                try:
+                    client = NetconfClient(
+                        hostname=dev["hostname"],
+                        port=dev["port"],
+                        username=dev["username"],
+                        password=dev["password"],
+                        notif_queue_size=100  # Optional: set a queue size for notifications
+                    )
 
-               # Asynchronously connect
-               await client.connect_async()
-               print(f"Connected to {dev['hostname']}")
+                    # Asynchronously connect
+                    await client.connect_async()
+                    print(f"Connected to {dev['hostname']}")
 
-               # Retrieve the running configuration
-               running_config = await client.get_config_async(source="running")
-               print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
+                    # Retrieve the running configuration
+                    running_config = await client.get_config_async(source="running")
+                    print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
 
-               # Subscribe to NETCONF notifications
-               await client.subscribe_async(stream="NETCONF")
-               print(f"Subscribed to notifications on {dev['hostname']}")
+                    # Subscribe to NETCONF notifications
+                    await client.subscribe_async(stream="NETCONF")
+                    print(f"Subscribed to notifications on {dev['hostname']}")
 
-               # Asynchronously receive notifications for a short duration
-               end_time = asyncio.get_event_loop().time() + 5  # e.g., 5 seconds
-               while asyncio.get_event_loop().time() < end_time:
-                   notification = await client.next_notification()
-                   if notification:
-                       print(f"[{dev['hostname']}] Notification:\n{notification}\n")
+                    # Asynchronously receive notifications for a short duration
+                    end_time = asyncio.get_event_loop().time() + 5  # e.g., 5 seconds
+                    while asyncio.get_event_loop().time() < end_time:
+                        notification = await client.next_notification()
+                        if notification:
+                            print(f"[{dev['hostname']}] Notification:\n{notification}\n")
 
-               # Disconnect
-               await client.disconnect_async()
-               print(f"Disconnected from {dev['hostname']}\n")
-
+                    # Disconnect
+                    await client.disconnect_async()
+                    print(f"Disconnected from {dev['hostname']}\n")
+                except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+                    # Handle exceptions here
+                    pass
            # Wait 60 seconds before next iteration
            print("Waiting 60 seconds before next iteration...\n")
            await asyncio.sleep(60)

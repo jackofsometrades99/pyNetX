@@ -168,7 +168,8 @@ PYBIND11_MODULE(pyNetX, m) {
                          const std::string &password,
                          const std::string &key_path,
                          int connect_timeout,
-                         int read_timeout) {
+                         int read_timeout,
+                         int notif_queue_size) {
             return std::make_shared<NetconfClient>(
                 hostname,
                 port,
@@ -176,7 +177,8 @@ PYBIND11_MODULE(pyNetX, m) {
                 password,
                 key_path,
                 connect_timeout,
-                read_timeout
+                read_timeout,
+                notif_queue_size
             );
         }),
         py::arg("hostname"),
@@ -185,7 +187,8 @@ PYBIND11_MODULE(pyNetX, m) {
         py::arg("password"),
         py::arg("key_path") = "",
         py::arg("connect_timeout") = 60,
-        py::arg("read_timeout") = 60)
+        py::arg("read_timeout") = 60,
+        py::arg("notif_queue_size") = -1)
         // Synchronous methods
         .def("connect_sync", &NetconfClient::connect_sync)
         .def("disconnect_sync", &NetconfClient::disconnect_sync)

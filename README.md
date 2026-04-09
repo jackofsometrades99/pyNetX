@@ -3,8 +3,47 @@
 **pyNetX** is a Python library that facilitates both synchronous and asynchronous client-side scripting and application development around the NETCONF protocol. Developed by **Sambhu Nampoothiri G**, pyNetX provides a modern, efficient interface for interacting with NETCONF-enabled network devices — with truly asynchronous capabilities using non blocking connections.
 
 > **Current Versions:**
-> Stable: **v1.0.9** 
+> Stable: **v2.0.2** 
 ---
+
+## v2.0.2 — 2026-04-01
+
+### Highlights
+
+* **Improved exception handling to prevent Python process crashes**
+  * Fixes a critical issue introduced in **v1.0.9** where, under high load, destructors did not reliably release memory objects. In some cases this raised an exception, triggered `std::terminate`, and caused Python processes to crash.
+  * This release improves memory cleanup and adds safer exception handling across the API surface to prevent those crashes.
+
+* **Added `notif_queue_size` for internal notification queues**
+  * A new `notif_queue_size` parameter is available when creating the internal notification queue for each device.
+  * This setting controls how many notifications are buffered until they are consumed.
+  * If the queue exceeds that limit, newer notifications are discarded and a message is logged to the console.
+  * The default value is `-1`, which means the queue size is unbounded.
+  * This parameter must be specified when creating the `NetconfClient` object.
+
+* **Global release build with builds for 3.11, 3.12, 3.13 and 3.14**
+  * This version of pyNetX supports multiple python versions upto 3.14.
+
+* **Why it matters**
+  * This release improves runtime stability under load, reduces the risk of unexpected Python process termination, and gives users better control over notification queue growth to help prevent memory pressure and queue overflows.
+
+### Internal changes
+
+* Minor cleanup and implementation updates in the pybind11 wrapper lambdas.
+
+### Bug fixes
+
+* Fixes the crash behavior introduced in **v1.0.9**.
+* No new functional regressions were introduced in **v2.0.2**.
+
+### Upgrade notes
+
+* **Safe drop-in upgrade.** There are no API-breaking changes compared with **v1.0.9**.
+* If you previously installed pyNetX from Test PyPI, install the updated wheel with:
+
+```bash
+pip install pyNetX==2.0.2
+```
 
 ## v1.0.9 — 2025-07-03
 ### Highlights
@@ -102,28 +141,36 @@ You can install **pyNetX** in either of the following ways:
 Below is an example of how to retrieve a device’s running configuration synchronously:
 
 ```python
-from pyNetX import NetconfClient
-
-# Create a NETCONF client instance
-client = NetconfClient(
-    hostname="192.168.1.1",
-    port=830,
-    username="admin",
-    password="admin",
-    connect_timeout=30, # CONNECT TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
-    read_timeout=30 # READ TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
+from pyNetX import (
+  NetconfClient,
+  NetconfConnectionRefusedError,
+  NetconfAuthError,
+  NetconfChannelError,
+  NetconfException
 )
+try:
+  # Create a NETCONF client instance
+  client = NetconfClient(
+      hostname="192.168.1.1",
+      port=830,
+      username="admin",
+      password="admin",
+      connect_timeout=30, # CONNECT TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
+      read_timeout=30 # READ TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
+  )
 
-# Establish a connection
-status = client.connect_sync()
+  # Establish a connection
+  status = client.connect_sync()
 
-# Retrieve the running configuration
-config = client.get_config_sync(source="running")
-print("Running Configuration:")
-print(config)
+  # Retrieve the running configuration
+  config = client.get_config_sync(source="running")
+  print("Running Configuration:")
+  print(config)
 
-# Disconnect from the device
-client.disconnect_sync()
+  # Disconnect from the device
+  client.disconnect_sync()
+except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+  pass
 ```
 ### Asynchronous Usage
 
@@ -132,28 +179,37 @@ The asynchronous API methods are provided with an *_async* suffix and integrate 
 ```python
 
 import asyncio
-from pyNetX import NetconfClient
+from pyNetX import (
+  NetconfClient,
+  NetconfConnectionRefusedError,
+  NetconfAuthError,
+  NetconfChannelError,
+  NetconfException
+)
 
 async def main():
-    client = NetconfClient(
-        hostname="192.168.1.1",
-        port=830,
-        username="admin",
-        password="admin",
-        connect_timeout=30, # CONNECT TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
-        read_timeout=30 # READ TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
-    )
-    
-    # Asynchronously connect to the device
-    await status = client.connect_async()
-    
-    # Retrieve configuration asynchronously
-    config = await client.get_config_async(source="running")
-    print("Running Configuration:")
-    print(config)
-    
-    # Asynchronously disconnect from the device
-    await client.disconnect_async()
+    try:
+      client = NetconfClient(
+          hostname="192.168.1.1",
+          port=830,
+          username="admin",
+          password="admin",
+          connect_timeout=30, # CONNECT TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
+          read_timeout=30 # READ TIMEOUT FROM CHANNEL. DEFAULT IS 60 SECONDS
+      )
+      
+      # Asynchronously connect to the device
+      await status = client.connect_async()
+      
+      # Retrieve configuration asynchronously
+      config = await client.get_config_async(source="running")
+      print("Running Configuration:")
+      print(config)
+      
+      # Asynchronously disconnect from the device
+      await client.disconnect_async()
+    except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+      pass
 
 # Run the asynchronous main function
 asyncio.run(main())
@@ -274,3 +330,5 @@ These methods can be used in both synchronous and asynchronous operations:
 
 - **`NetconfException`**  
   The base exception for NETCONF-related issues.
+
+

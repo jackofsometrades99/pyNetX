@@ -12,39 +12,53 @@ void NotificationReactorManager::init(size_t total_devices) {
 }
 
 void NotificationReactorManager::set_reactor_count(size_t new_count) {
-  std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<std::mutex> lk(mtx_);
 
-  // 1) gather all (fd,client) and unregister
-  std::vector<std::pair<int,NetconfClient*>> all;
-  all.reserve(fd_to_client_.size());
-  for (auto const& [fd, client] : fd_to_client_) {
-    size_t old_idx = fd_to_reactor_[fd];
-    reactors_[old_idx]->remove(fd);
-    all.emplace_back(fd, client);
-  }
+    // Optional safety check
+    if (new_count == 0) {
+        throw std::invalid_argument("new_count must be greater than 0");
+    }
 
-  // 2) clear state
-  fd_to_reactor_.clear();
-  fd_to_client_.clear();
-  reactors_.clear();
-  device_counts_.clear();
+    // 1) gather all (fd,client) and unregister
+    std::vector<std::pair<int, NetconfClient*>> all;
+    all.reserve(fd_to_client_.size());
 
-  // 3) rebuild 'new_count' reactors
-  reactors_.reserve(new_count);
-  device_counts_.assign(new_count, 0);
-  for (size_t i = 0; i < new_count; ++i) {
-    reactors_.emplace_back(std::make_unique<NotificationReactor>());
-  }
+    for (const auto& entry : fd_to_client_) {
+        int fd = entry.first;
+        NetconfClient* client = entry.second;
 
-  // 4) re-add all fds, always to the reactor with the fewest sockets
-  for (auto const& [fd, client] : all) {
-    auto best = std::min_element(device_counts_.begin(), device_counts_.end())
-                - device_counts_.begin();
-    reactors_[best]->add(fd, client);
-    fd_to_reactor_[fd] = best;
-    fd_to_client_[fd] = client;
-    device_counts_[best]++;
-  }
+        size_t old_idx = fd_to_reactor_[fd];
+        reactors_[old_idx]->remove(fd);
+        all.emplace_back(fd, client);
+    }
+
+    // 2) clear state
+    fd_to_reactor_.clear();
+    fd_to_client_.clear();
+    reactors_.clear();
+    device_counts_.clear();
+
+    // 3) rebuild 'new_count' reactors
+    reactors_.reserve(new_count);
+    device_counts_.assign(new_count, 0);
+
+    for (size_t i = 0; i < new_count; ++i) {
+        reactors_.emplace_back(std::make_unique<NotificationReactor>());
+    }
+
+    // 4) re-add all fds, always to the reactor with the fewest sockets
+    for (const auto& entry : all) {
+        int fd = entry.first;
+        NetconfClient* client = entry.second;
+
+        size_t best = std::min_element(device_counts_.begin(), device_counts_.end())
+                    - device_counts_.begin();
+
+        reactors_[best]->add(fd, client);
+        fd_to_reactor_[fd] = best;
+        fd_to_client_[fd] = client;
+        device_counts_[best]++;
+    }
 }
 
 void NotificationReactorManager::add(int fd, NetconfClient* client) {
