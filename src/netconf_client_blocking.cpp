@@ -20,38 +20,65 @@
 
 void NetconfClient::disconnect() {
     // Clean up RPC session
-    channel_.reset();
-    session_.reset();
-    socket_.reset();
+    try {
+        channel_.reset();
+        session_.reset();
+        socket_.reset();
 
-    if (notif_channel_) {
-        // Unregister notification socket from the global reactor
-        NotificationReactorManager::instance().remove(notif_socket_.get());
-
+        if (notif_channel_) {
+            // Unregister notification socket from the global reactor
+            NotificationReactorManager::instance().remove(notif_socket_.get());
+        }
         // Clean up notification session
         notif_channel_.reset();
         notif_session_.reset();
         notif_socket_.reset();
+        clear_notification_queue();
 
         notif_is_blocking_   = false;
         notif_is_connected_  = false;
-    }
 
-    is_blocking_   = false;
-    is_connected_  = false;
+        is_blocking_   = false;
+        is_connected_  = false;
+    } catch (const std::exception& e) {
+        std::cerr << "Error happened while removing netconf client object: " << std::string(e.what()) << '\n';
+    } catch (...) {
+        std::cerr << "Unknown error while removing netconf client object";
+    }
 }
 
 void NetconfClient::delete_notification_session() {
-    if (notif_channel_) {
-        NotificationReactorManager::instance().remove(notif_socket_.get());
+    try {
+        if (notif_channel_) {
+            NotificationReactorManager::instance().remove(notif_socket_.get());
+        }
         notif_channel_.reset();
         notif_session_.reset();
         notif_socket_.reset();
+        clear_notification_queue();
+
+        notif_is_blocking_   = false;
+        notif_is_connected_  = false;
+    } catch (const std::exception& e) {
+        std::cerr << "Error happened while deleting notification session: " << std::string(e.what()) << '\n';
+    } catch (...) {
+        std::cerr << "Unknown error while deleting notification session";
     }
-    notif_is_blocking_   = false;
-    notif_is_connected_  = false;
 }
 
+void NetconfClient::clear_notification_queue() {
+    try {
+        {
+            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+            _notif_queue.clear();
+        }
+        _notif_queue_cv.notify_all();
+    } catch (const std::exception& e) {
+        std::cerr << "Error happened while clearing notification queue: " << std::string(e.what()) << '\n';
+    } catch (...) {
+        std::cerr << "Unknown error while clearing notification queue";
+    }
+}
 
 bool NetconfClient::connect_blocking() {
     if (is_connected_) {
@@ -170,8 +197,7 @@ bool NetconfClient::connect_blocking() {
         is_blocking_ = true;
         is_connected_ = true;
         return true;
-    }
-    catch (const std::exception& err) {
+    } catch (const std::exception& err) {
         // RAII wrappers will clean up resources automatically.
         throw NetconfConnectionRefused("Unable to connect to device: " + std::string(err.what()));
     }
@@ -258,8 +284,7 @@ bool NetconfClient::connect_notification_blocking() {
         notif_is_connected_ = true;
         notif_is_blocking_ = true;
         return true;
-    }
-    catch (const std::exception &ex) {
+    } catch (const std::exception &ex) {
         notif_session_.reset();
         notif_channel_.reset();
         notif_socket_.reset();
@@ -272,13 +297,18 @@ std::string NetconfClient::send_rpc_blocking(const std::string& rpc) {
 }
 
 std::string NetconfClient::receive_notification_blocking() {
-    if (!notif_channel_) {
-        throw NetconfException("Notification channel not open.");
+    try {
+        if (!notif_channel_) {
+            throw NetconfException("Notification channel not open.");
+        }
+        if (!notif_session_) {
+            throw NetconfException("Notification session not open.");
+        }
+        return read_until_eom_blocking(notif_channel_.get(), notif_session_.get(), read_timeout_);
+    } catch (const std::exception& err) {
+        // RAII wrappers will clean up resources automatically.
+        throw NetconfConnectionRefused("Unable to connect to device: " + std::string(err.what()));
     }
-    if (!notif_session_) {
-        throw NetconfException("Notification session not open.");
-    }
-    return read_until_eom_blocking(notif_channel_.get(), notif_session_.get(), read_timeout_);
 }
 
 std::string NetconfClient::get_blocking(const std::string& filter) {

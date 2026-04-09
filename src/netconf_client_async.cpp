@@ -58,8 +58,10 @@ std::future<std::string> NetconfClient::get_async(const std::string& filter) {
     });
 }
 
-std::future<std::string> NetconfClient::get_config_async(const std::string& source,
-                                                         const std::string& filter) {
+std::future<std::string> NetconfClient::get_config_async(
+    const std::string& source,
+    const std::string& filter
+) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, source, filter]() -> std::string {
         if (!self->is_connected_) {
@@ -73,8 +75,10 @@ std::future<std::string> NetconfClient::get_config_async(const std::string& sour
     });
 }
 
-std::future<std::string> NetconfClient::copy_config_async(const std::string& target,
-                                                          const std::string& source) {
+std::future<std::string> NetconfClient::copy_config_async(
+    const std::string& target,
+    const std::string& source
+) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, target, source]() -> std::string {
         if (!self->is_connected_) {
@@ -116,9 +120,11 @@ std::future<std::string> NetconfClient::validate_async(const std::string& source
     });
 }
 
-std::future<std::string> NetconfClient::edit_config_async(const std::string& target,
-                                                          const std::string& config,
-                                                          bool do_validate) {
+std::future<std::string> NetconfClient::edit_config_async(
+    const std::string& target,
+    const std::string& config,
+    bool do_validate
+) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, target, config, do_validate]() -> std::string {
         if (!self->is_connected_) {
@@ -132,8 +138,10 @@ std::future<std::string> NetconfClient::edit_config_async(const std::string& tar
     });
 }
 
-std::future<std::string> NetconfClient::subscribe_async(const std::string& stream,
-                                                        const std::string& filter) {
+std::future<std::string> NetconfClient::subscribe_async(
+    const std::string& stream,
+    const std::string& filter
+) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, stream, filter]() -> std::string {
         std::unique_lock<std::mutex> lock(self->session_mutex_);
@@ -183,9 +191,11 @@ std::future<std::string> NetconfClient::commit_async() {
     });
 }
 
-std::future<std::string> NetconfClient::locked_edit_config_async(const std::string& target,
-                                                                 const std::string& config,
-                                                                 bool do_validate) {
+std::future<std::string> NetconfClient::locked_edit_config_async(
+    const std::string& target,
+    const std::string& config,
+    bool do_validate
+) {
     auto self = shared_from_this();
     return get_pool().enqueue([self, target, config, do_validate]() -> std::string {
         if (!self->is_connected_) {

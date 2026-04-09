@@ -251,8 +251,7 @@ bool NetconfClient::connect_non_blocking() {
         is_connected_ = true;
         is_blocking_ = false;
         return true;
-    }
-    catch (const std::exception& err) {
+    } catch (const std::exception& err) {
         // RAII wrappers ensure that session_, channel_, and socket_ are cleaned up automatically.
         throw NetconfConnectionRefused("Unable to connect to device: " + std::string(err.what()));
     }
@@ -507,62 +506,83 @@ bool NetconfClient::connect_notification_non_blocking() {
 }
 
 void NetconfClient::on_notification_ready(int fd) {
-    auto xml = read_until_eom_non_blocking(
-        notif_channel_.get(),
-        notif_session_.get(),
-        -1
-    );
-    {
-        std::lock_guard<std::mutex> lk(_notif_queue_mtx);
-        _notif_queue.push_back(std::move(xml));
+    try {
+        auto xml = read_until_eom_non_blocking(
+            notif_channel_.get(),
+            notif_session_.get(),
+            -1
+        );
+        if (xml.empty()) {
+            return;
+        }
+        {
+            if (_notif_queue_max_size_ != -1) {
+                std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+                if (_notif_queue.size() > _notif_queue_max_size_) {
+                    std::cout << "Queue full, dropping notification\n" << xml << "\n" << std::endl;
+                    return;
+                }
+                _notif_queue.push_back(std::move(xml));
+            }
+        }
+        _notif_queue_cv.notify_one();
+    } catch (const std::exception& e) {
+        throw NetconfException("Unable to read from channel: " + std::string(e.what()));
     }
-    _notif_queue_cv.notify_one();
+}
+
+std::string NetconfClient::next_notification() {
+    try {
+        if (!notif_channel_) {
+            throw NetconfException("Notification channel not open.");
+        }
+        if (!notif_session_) {
+            throw NetconfException("Notification session not open.");
+        }
+        std::unique_lock<std::mutex> lk(_notif_queue_mtx);
+        bool got_data = _notif_queue_cv.wait_for(
+            lk,
+            std::chrono::milliseconds(10),
+            [&]{ return !_notif_queue.empty(); }
+        );
+        if (!got_data) {
+            lk.unlock();
+            return std::string{};
+        }
+        std::string xml = std::move(_notif_queue.front());
+        _notif_queue.pop_front();
+        lk.unlock();
+        return xml;
+    } catch (const std::exception& e) {
+        throw NetconfException("Unable to read from queue: " + std::string(e.what()));
+    }
+}
+
+bool NetconfClient::is_subscription_active() const {
+    try {
+        if (!notif_is_connected_) return false;
+        if (!notif_channel_) return false;
+        if (!notif_session_) return false;
+
+        int fd = notif_socket_.get();
+        if (fd < 0) return false;
+
+        int flags = fcntl(fd, F_GETFD);
+        if (flags < 0 && errno == EBADF) return false;
+
+        return true;
+    } catch (const std::exception& e) {
+        throw NetconfException("Unable to get subscription status: " + std::string(e.what()));
+    }
 }
 
 std::string NetconfClient::send_rpc_non_blocking(const std::string& rpc) {
     return send_rpc_non_blocking_func(channel_.get(), session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::next_notification() {
-    if (!notif_channel_) {
-        throw NetconfException("Notification channel not open.");
-    }
-    if (!notif_session_) {
-        throw NetconfException("Notification session not open.");
-    }
-    std::unique_lock<std::mutex> lk(_notif_queue_mtx);
-    bool got_data = _notif_queue_cv.wait_for(
-        lk,
-        std::chrono::milliseconds(10),
-        [&]{ return !_notif_queue.empty(); }
-    );
-    if (!got_data) {
-        lk.unlock();
-        return std::string{};
-    }
-    std::string xml = std::move(_notif_queue.front());
-    _notif_queue.pop_front();
-    lk.unlock();
-    return xml;
-}
-
-
-bool NetconfClient::is_subscription_active() const {
-    if (!notif_is_connected_) return false;
-    if (!notif_channel_) return false;
-    if (!notif_session_) return false;
-
-    int fd = notif_socket_.get();
-    if (fd < 0) return false;
-
-    int flags = fcntl(fd, F_GETFD);
-    if (flags < 0 && errno == EBADF) return false;
-
-    return true;
-}
-
-
-std::string NetconfClient::get_non_blocking(const std::string& filter) {
+std::string NetconfClient::get_non_blocking(
+    const std::string& filter
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -574,8 +594,10 @@ std::string NetconfClient::get_non_blocking(const std::string& filter) {
     return send_rpc_non_blocking_func(channel_.get(),  session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::get_config_non_blocking(const std::string& source,
-                                      const std::string& filter) {
+std::string NetconfClient::get_config_non_blocking(
+    const std::string& source,
+    const std::string& filter
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -588,8 +610,10 @@ std::string NetconfClient::get_config_non_blocking(const std::string& source,
     return send_rpc_non_blocking_func(channel_.get(),  session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::copy_config_non_blocking(const std::string& target,
-                                       const std::string& source) {
+std::string NetconfClient::copy_config_non_blocking(
+    const std::string& target,
+    const std::string& source
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -601,7 +625,9 @@ std::string NetconfClient::copy_config_non_blocking(const std::string& target,
     return send_rpc_non_blocking_func(channel_.get(),  session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::delete_config_non_blocking(const std::string& target) {
+std::string NetconfClient::delete_config_non_blocking(
+    const std::string& target
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -612,7 +638,9 @@ std::string NetconfClient::delete_config_non_blocking(const std::string& target)
     return send_rpc_non_blocking_func(channel_.get(),  session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::validate_non_blocking(const std::string& source) {
+std::string NetconfClient::validate_non_blocking(
+    const std::string& source
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -623,9 +651,11 @@ std::string NetconfClient::validate_non_blocking(const std::string& source) {
     return send_rpc_non_blocking_func(channel_.get(),  session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::edit_config_non_blocking(const std::string& target,
+std::string NetconfClient::edit_config_non_blocking(
+    const std::string& target,
     const std::string& config,
-    bool do_validate) {
+    bool do_validate
+) {
     std::string rpc =
         R"(<?xml version="1.0" encoding="UTF-8"?>)"
         R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
@@ -643,27 +673,32 @@ std::string NetconfClient::edit_config_non_blocking(const std::string& target,
 
 std::string NetconfClient::subscribe_non_blocking(
     const std::string& stream,
-    const std::string& filter) {
-        bool connection_status = connect_notification_non_blocking();
-        if (!connection_status) {
-            throw NetconfException("Unable to create notifications channel");
+    const std::string& filter
+)   {
+        try {
+            bool connection_status = connect_notification_non_blocking();
+            if (!connection_status) {
+                throw NetconfException("Unable to create notifications channel");
+            }
+            if (!notif_channel_) {
+                throw NetconfException("No notifications channel present");
+            }
+            if (!notif_session_) {
+                throw NetconfException("No notifications session present");
+            }
+            std::string rpc =
+                R"(<?xml version="1.0" encoding="UTF-8"?>)"
+                R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
+                R"(<create-subscription xmlns="urn:ietf:params:xml:ns:netconf:notification:1.0">)"
+                    R"(<stream>)" + stream + R"(</stream>)";
+            if (!filter.empty()) {
+                rpc += R"(<filter type="subtree">)" + filter + "</filter>";
+            }
+            rpc += R"(</create-subscription></rpc>)";
+            return send_rpc_non_blocking_func(notif_channel_.get(),  notif_session_.get(), notif_socket_.get(), rpc, read_timeout_);
+        } catch (const std::exception& e) {
+            throw NetconfException("Unable to Subscribe to device: " + std::string(e.what()));
         }
-        if (!notif_channel_) {
-            throw NetconfException("No notifications channel present");
-        }
-        if (!notif_session_) {
-            throw NetconfException("No notifications session present");
-        }
-        std::string rpc =
-            R"(<?xml version="1.0" encoding="UTF-8"?>)"
-            R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
-            R"(<create-subscription xmlns="urn:ietf:params:xml:ns:netconf:notification:1.0">)"
-                R"(<stream>)" + stream + R"(</stream>)";
-        if (!filter.empty()) {
-            rpc += R"(<filter type="subtree">)" + filter + "</filter>";
-        }
-        rpc += R"(</create-subscription></rpc>)";
-        return send_rpc_non_blocking_func(notif_channel_.get(),  notif_session_.get(), notif_socket_.get(), rpc, read_timeout_);
 }
 
 std::string NetconfClient::lock_non_blocking(const std::string& target) {
@@ -697,12 +732,19 @@ std::string NetconfClient::commit_non_blocking() {
     return send_rpc_non_blocking_func(channel_.get(), session_.get(), socket_.get(), rpc, read_timeout_);
 }
 
-std::string NetconfClient::locked_edit_config_non_blocking(const std::string& target,
-                                              const std::string& config,
-                                              bool do_validate) {
-    lock_non_blocking(target);
-    std::string reply = edit_config_non_blocking(target, config, do_validate);
-    commit_non_blocking();
-    unlock_non_blocking(target);
-    return reply;
+std::string NetconfClient::locked_edit_config_non_blocking(
+    const std::string& target,
+    const std::string& config,
+    bool do_validate
+) {
+    try {
+        lock_non_blocking(target);
+        std::string reply = edit_config_non_blocking(target, config, do_validate);
+        commit_non_blocking();
+        unlock_non_blocking(target);
+        return reply;
+    } catch (const std::exception& err) {
+        // RAII wrappers ensure that session_, channel_, and socket_ are cleaned up automatically.
+        throw NetconfException("Unable to complete operation: " + std::string(err.what()));
+    }
 }

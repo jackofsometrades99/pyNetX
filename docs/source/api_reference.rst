@@ -15,7 +15,13 @@ Usage Examples:
    from pyNetX import NetconfClient
 
    # Synchronous usage
-   client = NetconfClient("192.168.1.1", 830, "admin", "admin")
+   client = NetconfClient(
+      hostname="192.168.1.1",
+      port=830,
+      username="admin",
+      password="admin",
+      notif_queue_size=100  # Optional: set a queue size for notifications
+   )
    client.connect_sync()
    response = client.get_config_sync()
    client.disconnect_sync()
@@ -24,7 +30,13 @@ Usage Examples:
    import asyncio
 
    async def main():
-       client = NetconfClient("192.168.1.1", 830, "admin", "admin")
+       client = NetconfClient(
+           hostname="192.168.1.1",
+           port=830,
+           username="admin",
+           password="admin",
+           notif_queue_size=100  # Optional: set a queue size for notifications
+       )
        await client.connect_async()
        response = await client.get_config_async()
        await client.disconnect_async()
@@ -740,5 +752,5 @@ All methods may raise one of the following custom exceptions upon failure:
 - **NetconfChannelError**  
 - **NetconfException**  
 
-For details, see :doc:`introduction` or check out the usage examples in :doc:`usage`.
+For details, see :doc:`introduction` or check out the usage examples in :doc:`examples`.
 

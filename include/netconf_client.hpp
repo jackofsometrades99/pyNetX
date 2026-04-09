@@ -159,10 +159,12 @@ class SocketRAII {
 class NetconfClient : public std::enable_shared_from_this<NetconfClient>
 {
 public:
-    NetconfClient(const std::string& hostname, int port,
-                  const std::string& username, const std::string& password,
-                  const std::string& key_path = "", int connect_timeout = 60,
-                  int read_timeout = 60);
+    NetconfClient(
+        const std::string& hostname, int port,
+        const std::string& username, const std::string& password,
+        const std::string& key_path = "", int connect_timeout = 60,
+        int read_timeout = 60, int notif_queue_size = -1
+    );
     ~NetconfClient();
 
     // ----------------------- Blocking Methods -------------------------
@@ -266,6 +268,7 @@ public:
     bool is_subscription_active() const;
     void disconnect();
     void delete_notification_session();
+    void clear_notification_queue();
     void delete_subsription();
 
 private:
@@ -314,6 +317,7 @@ private:
     std::string key_path_;
     int connect_timeout_;
     int read_timeout_;
+    int _notif_queue_max_size_;
     std::string resolved_host_;
 
     std::mutex session_mutex_;
