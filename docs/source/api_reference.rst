@@ -437,23 +437,27 @@ Sends a custom RPC asynchronously and awaits the response.
 next_notification()
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously tries to retrieve NETCONF notification data 
-( can be a complete notification or partial notification string ) from 
-NETCONF subscribed channel
+**Description**
+Polls the internal NETCONF notification queue and
+returns the next queued notification, if one is available.
+This method is intentionally lightweight and non-awaitable.
+It can be called from synchronous code or from inside an async function,
+but it should be called directly, not with ``await``.
 
-**Parameters**  
+**Parameters**
 - None
 
-**Returns**  
-- A string with the notification XML or piece of a NETCONF notification or None on timeout.
+**Returns**
+- ``str``: The next notification XML string.
+- ``""``: No notification was available during the short polling window.
 
 **Example**  
 
 .. code-block:: python
 
-   notification = await client.next_notification()
-   print("Async notification received:", notification)
+   notification = client.next_notification()
+   if notification:
+       print("Notification received:", notification)
 
 
 get_async(filter="")
@@ -726,21 +730,27 @@ Sets the number of threads in the shared task pool.
 set_notification_reactor_count(nThreads)
 ~~~~~~~~~~~~~~
 
-**Description**  
-Sets the number of threads in the notification reactor pool.
+**Description**
+Configures how many background epoll reactor threads pyNetX uses
+to monitor notification sockets.
 
-**Parameters**  
-- **target** (int): Number of threads present in reactor pool.
+If this function is not called, pyNetX automatically creates one
+notification reactor when the first subscription is registered.
+For large deployments, configure this once during startup before
+creating many subscriptions.
 
-**Returns**  
+**Parameters**
+- **nThreads** (int): Number of notification reactor threads to use.
+
+**Returns**
 - None.
 
-**Example**  
+**Example**
 
 .. code-block:: python
 
    import pyNetX
-   pyNetX.set_notification_reactor_count(10) # Creates 10 threads in the notification reactor pool.
+   pyNetX.set_notification_reactor_count(8) # Use 8 background threads to monitor notification sockets.
 
 
 Common Exceptions

@@ -494,9 +494,18 @@ bool NetconfClient::connect_notification_non_blocking() {
         );
 
         // ——— REGISTER WITH GLOBAL REACTOR ——————————————
-        NotificationReactorManager::instance().add(notif_socket_.get(), this);
-
-        notif_is_connected_ = true;
+        // NotificationReactorManager::instance().add(
+        //     notif_socket_.get(),
+        //     shared_from_this()
+        // );
+        // UPDATE... I am removing the registration of notification FD with reactor here.
+        //
+        // At this point I only have an SSH/NETCONF notification channel.
+        // The <create-subscription> RPC has not been sent yet.
+        //
+        // If I register here, the reactor can steal the subscription
+        // <rpc-reply> before subscribe_non_blocking() reads it.
+        notif_is_connected_ = false;
         notif_is_blocking_ = false;
         return true;
     }
@@ -505,54 +514,112 @@ bool NetconfClient::connect_notification_non_blocking() {
     }
 }
 
+void NetconfClient::mark_notification_dead() noexcept {
+    try {
+        {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+
+            notif_is_connected_ = false;
+            notif_is_blocking_ = false;
+
+            notif_channel_.reset();
+            notif_session_.reset();
+            notif_socket_.reset();
+        }
+        {
+            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+            _notif_queue.clear();
+        }
+
+        _notif_queue_cv.notify_all();
+    } catch (...) {
+        // Never throw from cleanup called by reactor thread.
+    }
+}
+
 void NetconfClient::on_notification_ready(int fd) {
     try {
-        auto xml = read_until_eom_non_blocking(
-            notif_channel_.get(),
-            notif_session_.get(),
-            -1
-        );
+        std::string xml;
+
+        {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+
+            if (!notif_channel_ || !notif_session_) {
+                throw NetconfException("Notification channel/session is not active");
+            }
+
+            if (notif_socket_.get() != fd) {
+                throw NetconfException("Notification FD does not match active subscription socket");
+            }
+
+            xml = read_until_eom_non_blocking(
+                notif_channel_.get(),
+                notif_session_.get(),
+                read_timeout_
+            );
+        }
+
         if (xml.empty()) {
             return;
         }
+
         {
-            if (_notif_queue_max_size_ != -1) {
-                std::lock_guard<std::mutex> lk(_notif_queue_mtx);
-                if (_notif_queue.size() > _notif_queue_max_size_) {
-                    std::cout << "Queue full, dropping notification\n" << xml << "\n" << std::endl;
-                    return;
-                }
-                _notif_queue.push_back(std::move(xml));
+            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+
+            if (_notif_queue_max_size_ >= 0 &&
+                _notif_queue.size() >= static_cast<size_t>(_notif_queue_max_size_)) {
+                std::cerr << "Notification queue full, dropping notification"
+                          << std::endl;
+                return;
             }
+
+            _notif_queue.push_back(std::move(xml));
         }
+
         _notif_queue_cv.notify_one();
+
     } catch (const std::exception& e) {
-        throw NetconfException("Unable to read from channel: " + std::string(e.what()));
+        throw NetconfException(
+            std::string("Unable to read from channel: ") + e.what()
+        );
     }
 }
 
 std::string NetconfClient::next_notification() {
     try {
-        if (!notif_channel_) {
-            throw NetconfException("Notification channel not open.");
+        {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+
+            if (!notif_channel_) {
+                throw NetconfException("Notification channel not open.");
+            }
+
+            if (!notif_session_) {
+                throw NetconfException("Notification session not open.");
+            }
+
+            if (!notif_is_connected_) {
+                throw NetconfException("Notification subscription is not active.");
+            }
         }
-        if (!notif_session_) {
-            throw NetconfException("Notification session not open.");
-        }
+
         std::unique_lock<std::mutex> lk(_notif_queue_mtx);
+
         bool got_data = _notif_queue_cv.wait_for(
             lk,
             std::chrono::milliseconds(10),
             [&]{ return !_notif_queue.empty(); }
         );
+
         if (!got_data) {
-            lk.unlock();
             return std::string{};
         }
+
         std::string xml = std::move(_notif_queue.front());
         _notif_queue.pop_front();
-        lk.unlock();
+
         return xml;
+
     } catch (const std::exception& e) {
         throw NetconfException("Unable to read from queue: " + std::string(e.what()));
     }
@@ -560,6 +627,8 @@ std::string NetconfClient::next_notification() {
 
 bool NetconfClient::is_subscription_active() const {
     try {
+        std::lock_guard<std::mutex> guard(notif_mutex_);
+
         if (!notif_is_connected_) return false;
         if (!notif_channel_) return false;
         if (!notif_session_) return false;
@@ -571,6 +640,7 @@ bool NetconfClient::is_subscription_active() const {
         if (flags < 0 && errno == EBADF) return false;
 
         return true;
+
     } catch (const std::exception& e) {
         throw NetconfException("Unable to get subscription status: " + std::string(e.what()));
     }
@@ -674,31 +744,65 @@ std::string NetconfClient::edit_config_non_blocking(
 std::string NetconfClient::subscribe_non_blocking(
     const std::string& stream,
     const std::string& filter
-)   {
-        try {
-            bool connection_status = connect_notification_non_blocking();
-            if (!connection_status) {
-                throw NetconfException("Unable to create notifications channel");
-            }
-            if (!notif_channel_) {
-                throw NetconfException("No notifications channel present");
-            }
-            if (!notif_session_) {
-                throw NetconfException("No notifications session present");
-            }
-            std::string rpc =
-                R"(<?xml version="1.0" encoding="UTF-8"?>)"
-                R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
-                R"(<create-subscription xmlns="urn:ietf:params:xml:ns:netconf:notification:1.0">)"
-                    R"(<stream>)" + stream + R"(</stream>)";
-            if (!filter.empty()) {
-                rpc += R"(<filter type="subtree">)" + filter + "</filter>";
-            }
-            rpc += R"(</create-subscription></rpc>)";
-            return send_rpc_non_blocking_func(notif_channel_.get(),  notif_session_.get(), notif_socket_.get(), rpc, read_timeout_);
-        } catch (const std::exception& e) {
-            throw NetconfException("Unable to Subscribe to device: " + std::string(e.what()));
+) {
+    try {
+        bool connection_status = connect_notification_non_blocking();
+
+        if (!connection_status) {
+            throw NetconfException("Unable to create notifications channel");
         }
+
+        if (!notif_channel_) {
+            throw NetconfException("No notifications channel present");
+        }
+
+        if (!notif_session_) {
+            throw NetconfException("No notifications session present");
+        }
+
+        if (notif_socket_.get() < 0) {
+            throw NetconfException("No notifications socket present");
+        }
+
+        std::string rpc =
+            R"(<?xml version="1.0" encoding="UTF-8"?>)"
+            R"(<rpc xmlns="urn:ietf:params:xml:ns:netconf:base:1.0" message-id="101">)"
+            R"(<create-subscription xmlns="urn:ietf:params:xml:ns:netconf:notification:1.0">)"
+            R"(<stream>)" + stream + R"(</stream>)";
+
+        if (!filter.empty()) {
+            rpc += R"(<filter type="subtree">)" + filter + "</filter>";
+        }
+
+        rpc += R"(</create-subscription></rpc>)";
+
+        // Read the subscription RPC reply before registering with the reactor.
+        std::string reply = send_rpc_non_blocking_func(
+            notif_channel_.get(),
+            notif_session_.get(),
+            notif_socket_.get(),
+            rpc,
+            read_timeout_
+        );
+
+        // Now it is safe for the reactor to read real <notification> messages.
+        NotificationReactorManager::instance().add(
+            notif_socket_.get(),
+            shared_from_this()
+        );
+
+        notif_is_connected_ = true;
+        notif_is_blocking_ = false;
+
+        return reply;
+
+    } catch (const std::exception& e) {
+        mark_notification_dead();
+
+        throw NetconfException(
+            "Unable to Subscribe to device: " + std::string(e.what())
+        );
+    }
 }
 
 std::string NetconfClient::lock_non_blocking(const std::string& target) {

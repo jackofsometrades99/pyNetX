@@ -19,29 +19,21 @@
 #include <unistd.h>
 
 void NetconfClient::disconnect() {
-    // Clean up RPC session
     try {
+        // Clean up RPC session.
         channel_.reset();
         session_.reset();
         socket_.reset();
 
-        if (notif_channel_) {
-            // Unregister notification socket from the global reactor
-            NotificationReactorManager::instance().remove(notif_socket_.get());
-        }
-        // Clean up notification session
-        notif_channel_.reset();
-        notif_session_.reset();
-        notif_socket_.reset();
-        clear_notification_queue();
+        // Clean up notification session through the mutex-protected path.
+        delete_notification_session();
 
-        notif_is_blocking_   = false;
-        notif_is_connected_  = false;
+        is_blocking_ = false;
+        is_connected_ = false;
 
-        is_blocking_   = false;
-        is_connected_  = false;
     } catch (const std::exception& e) {
-        std::cerr << "Error happened while removing netconf client object: " << std::string(e.what()) << '\n';
+        std::cerr << "Error happened while removing netconf client object: "
+                  << e.what() << '\n';
     } catch (...) {
         std::cerr << "Unknown error while removing netconf client object";
     }
@@ -49,18 +41,29 @@ void NetconfClient::disconnect() {
 
 void NetconfClient::delete_notification_session() {
     try {
-        if (notif_channel_) {
-            NotificationReactorManager::instance().remove(notif_socket_.get());
-        }
-        notif_channel_.reset();
-        notif_session_.reset();
-        notif_socket_.reset();
-        clear_notification_queue();
+        int fd = -1;
 
-        notif_is_blocking_   = false;
-        notif_is_connected_  = false;
+        {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+            fd = notif_socket_.get();
+        }
+
+        if (fd >= 0) {
+            try {
+                NotificationReactorManager::instance().remove(fd);
+            } catch (const std::exception& e) {
+                std::cerr << "Error removing notification FD from reactor: "
+                          << e.what() << '\n';
+            } catch (...) {
+                std::cerr << "Unknown error removing notification FD from reactor\n";
+            }
+        }
+
+        mark_notification_dead();
+
     } catch (const std::exception& e) {
-        std::cerr << "Error happened while deleting notification session: " << std::string(e.what()) << '\n';
+        std::cerr << "Error happened while deleting notification session: "
+                  << e.what() << '\n';
     } catch (...) {
         std::cerr << "Unknown error while deleting notification session";
     }
@@ -298,16 +301,26 @@ std::string NetconfClient::send_rpc_blocking(const std::string& rpc) {
 
 std::string NetconfClient::receive_notification_blocking() {
     try {
+        std::lock_guard<std::mutex> guard(notif_mutex_);
+
         if (!notif_channel_) {
             throw NetconfException("Notification channel not open.");
         }
+
         if (!notif_session_) {
             throw NetconfException("Notification session not open.");
         }
-        return read_until_eom_blocking(notif_channel_.get(), notif_session_.get(), read_timeout_);
+
+        return read_until_eom_blocking(
+            notif_channel_.get(),
+            notif_session_.get(),
+            read_timeout_
+        );
+
     } catch (const std::exception& err) {
-        // RAII wrappers will clean up resources automatically.
-        throw NetconfConnectionRefused("Unable to connect to device: " + std::string(err.what()));
+        throw NetconfConnectionRefused(
+            "Unable to connect to device: " + std::string(err.what())
+        );
     }
 }
 

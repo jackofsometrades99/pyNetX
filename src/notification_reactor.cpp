@@ -1,3 +1,4 @@
+#include "notification_reactor_manager.hpp"
 #include "notification_reactor.hpp"
 #include "netconf_client.hpp"
 #include <sys/epoll.h>
@@ -6,6 +7,7 @@
 #include <string.h>
 #include <stdexcept>
 #include <iostream>
+#include <memory>
 
 NotificationReactor& NotificationReactor::instance() {
     static NotificationReactor inst;
@@ -40,88 +42,146 @@ NotificationReactor::~NotificationReactor() {
     }
 }
 
-void NotificationReactor::add(int fd, NetconfClient* client) {
-  try {
-    std::lock_guard<std::mutex> guard(_mtx);
+void NotificationReactor::add(int fd, std::weak_ptr<NetconfClient> client) {
+    try {
+        std::lock_guard<std::mutex> guard(_mtx);
 
-    struct epoll_event ev{};
-    ev.events  = EPOLLIN | EPOLLERR | EPOLLRDHUP;
-    ev.data.fd = fd;
+        if (fd < 0) {
+            throw NetconfException("NotificationReactor: invalid FD");
+        }
 
-    if (epoll_ctl(_epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-        throw NetconfException("NotificationReactor: epoll_ctl ADD failed");
+        if (client.expired()) {
+            throw NetconfException("NotificationReactor: expired client");
+        }
+
+        struct epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLERR | EPOLLRDHUP;
+        ev.data.fd = fd;
+
+        if (epoll_ctl(_epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+            throw NetconfException(
+                "NotificationReactor: epoll_ctl ADD failed: " +
+                std::string(strerror(errno))
+            );
+        }
+
+        _handlers[fd] = std::move(client);
+
+    } catch (const std::exception& e) {
+        throw NetconfException(
+            "Error happened while adding to reactor pool: " +
+            std::string(e.what())
+        );
     }
-    _handlers[fd] = client;
-  }  catch (const std::exception& e) {
-      throw NetconfException(std::string("Error happened while adding to reactor pool: " + std::string(e.what())));
-  }
 }
 
 void NotificationReactor::remove(int fd) {
-  try {
     std::lock_guard<std::mutex> guard(_mtx);
+
+    if (fd < 0) {
+        return;
+    }
+
     epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
     _handlers.erase(fd);
-  }  catch (const std::exception& e) {
-      throw NetconfException(std::string("Error happened while removing from reactor pool: " + std::string(e.what())));
-  }
 }
 
 void NotificationReactor::loop() {
-  while (_running) {
-    try {
-      struct epoll_event events[64];
-      int n = epoll_wait(_epoll_fd, events, 64, -1);
-      if (n < 0) {
-        if (errno == EINTR) {
-          continue;            // signal, just retry
+    while (_running) {
+        struct epoll_event events[64];
+
+        int n = epoll_wait(_epoll_fd, events, 64, 1000);
+
+        if (!_running) {
+            break;
         }
-        if (errno == EBADF) {
-            std::lock_guard<std::mutex> guard(_mtx);
 
-            ::close(_epoll_fd);
-            _epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-            if (_epoll_fd < 0) {
-                throw NetconfException("Recreating epoll failed");
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
             }
 
-            for (auto it = _handlers.begin(); it != _handlers.end(); ) {
-                int fd = it->first;
-
-                struct epoll_event ev = {};
-                ev.events = EPOLLIN | EPOLLERR | EPOLLRDHUP;
-                ev.data.fd = fd;
-
-                if (epoll_ctl(_epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-                    if (errno == ENOENT || errno == EBADF) {
-                        it = _handlers.erase(it);
-                        continue;
-                    }
-                    throw NetconfException("Failed to re-add FD to epoll");
-                }
-
-                ++it;
-            }
-
+            std::cerr << "NotificationReactor: epoll_wait failed: "
+                      << strerror(errno) << std::endl;
             continue;
         }
-        // some other error
-        throw NetconfException(std::string("epoll_wait error: ") + strerror(errno));
-      }
-      std::lock_guard<std::mutex> guard(_mtx);
-      for (int i = 0; i < n; ++i) {
-        int fd = events[i].data.fd;
-        auto it = _handlers.find(fd);
-        if (it != _handlers.end()) {
-          try {
-          it->second->on_notification_ready(fd);
-          } catch (const std::exception& e) {
-            throw NetconfException(std::string("Error assigning FD's to loop: " + std::string(e.what())));
-          }
+
+        for (int i = 0; i < n; ++i) {
+            int fd = events[i].data.fd;
+            uint32_t ev = events[i].events;
+
+            std::shared_ptr<NetconfClient> client;
+
+            {
+                std::lock_guard<std::mutex> guard(_mtx);
+
+                auto it = _handlers.find(fd);
+                if (it == _handlers.end()) {
+                    continue;
+                }
+
+                client = it->second.lock();
+
+                if (!client) {
+                    epoll_ctl(_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                    _handlers.erase(it);
+                    continue;
+                }
+            }
+
+            auto cleanup_dead_fd = [&]() noexcept {
+                try {
+                    NotificationReactorManager::instance().remove(fd);
+                } catch (const std::exception& e) {
+                    std::cerr << "NotificationReactor: manager remove failed for FD "
+                              << fd << ": " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "NotificationReactor: manager remove failed for FD "
+                              << fd << ": unknown error" << std::endl;
+                }
+
+                try {
+                    remove(fd);
+                } catch (...) {
+                    // remove() should not throw, but stay defensive.
+                }
+
+                try {
+                    if (client) {
+                        client->mark_notification_dead();
+                    }
+                } catch (...) {
+                    // mark_notification_dead() is noexcept, but stay defensive.
+                }
+            };
+
+            if (ev & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                std::cerr << "NotificationReactor: notification FD "
+                          << fd << " closed or errored; cleaning up"
+                          << std::endl;
+
+                cleanup_dead_fd();
+                continue;
+            }
+
+            try {
+                client->on_notification_ready(fd);
+            } catch (const std::exception& e) {
+                std::cerr << "NotificationReactor: notification read failed on FD "
+                          << fd << ": " << e.what()
+                          << "; cleaning up"
+                          << std::endl;
+
+                cleanup_dead_fd();
+                continue;
+            } catch (...) {
+                std::cerr << "NotificationReactor: unknown notification read failure on FD "
+                          << fd << "; cleaning up"
+                          << std::endl;
+
+                cleanup_dead_fd();
+                continue;
+            }
         }
-      }
-    }   catch (const std::exception& e) {
-        throw NetconfException(std::string("Error happened while reading notification in loop from FD: " + std::string(e.what())));
     }
-  }
 }

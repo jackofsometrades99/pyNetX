@@ -3,8 +3,53 @@
 **pyNetX** is a Python library that facilitates both synchronous and asynchronous client-side scripting and application development around the NETCONF protocol. Developed by **Sambhu Nampoothiri G**, pyNetX provides a modern, efficient interface for interacting with NETCONF-enabled network devices — with truly asynchronous capabilities using non blocking connections.
 
 > **Current Versions:**
-> Stable: **v2.0.2** 
+> Stable: **v2.0.3** 
 ---
+
+## v2.0.3 — 2026-05-28
+
+### Highlights
+
+* **Hardened NETCONF notification handling**
+
+  * Fixed a crash path where exceptions from the notification reactor thread could escape into C++ `std::thread` and terminate the Python process.
+  * Notification reactor callbacks now log read failures, unregister the affected file descriptor, mark the subscription inactive, and allow the Python process to continue running.
+  * The notification reactor now stores weak references to `NetconfClient` instances, preventing stale raw-pointer access if a Python client object is destroyed while a notification FD is still registered.
+
+* **Safer notification subscription startup**
+
+  * Notification sockets are now registered with the epoll reactor only after the `<create-subscription>` RPC has completed successfully.
+  * This prevents the reactor thread from accidentally reading the subscription `<rpc-reply>` before `subscribe_async()` / `subscribe_sync()` receives it.
+
+* **Improved notification cleanup**
+
+  * Added mutex protection around notification resources, including the notification session, channel, socket, and subscription state flags.
+  * Cleanup paths now unregister notification FDs before resetting notification resources.
+  * `is_subscription_active()` now safely reports whether the notification subscription is still usable.
+
+* **Hardened async bridge and worker threads**
+
+  * Detached pybind11 watcher threads now have top-level exception guards, so Python event-loop shutdown or callback scheduling errors are logged instead of terminating the process.
+  * Thread-pool worker tasks now have defensive exception guards to prevent unexpected C++ exceptions from escaping worker threads.
+
+* **Notification queue behavior**
+
+  * `notif_queue_size=-1` means the notification queue is unbounded.
+  * A non-negative `notif_queue_size` limits the number of queued notifications.
+  * When the queue is full, new notifications are dropped and a message is logged.
+
+### Upgrade notes
+
+* This release is intended to be a drop-in stability update.
+* `set_notification_reactor_count(n)` is optional. If it is not called, pyNetX creates one notification reactor automatically when the first subscription is registered.
+* For large deployments, call `set_notification_reactor_count(n)` before creating many subscriptions.
+* `next_notification()` is a synchronous polling method. Do not use `await client.next_notification()`. Use `client.next_notification()` directly, even inside an async function.
+* `set_threadpool_size(n)` should be called before starting async NETCONF operations. Runtime resizing during active operations is not recommended.
+* If the Python event loop closes before an async operation completes, pyNetX logs the callback scheduling failure instead of aborting the interpreter.
+
+```bash
+pip install pyNetX==2.0.3
+```
 
 ## v2.0.2 — 2026-04-01
 
@@ -98,9 +143,10 @@ pip install pyNetX==2.0.2
 
 ## Documentation
 
-The full documentation (with detailed API references and more usage examples) is here.
-
-[pyNetX Official Documentation](https://pynetx.readthedocs.io/en/latest/)
+Full documentation: [pyNetX Official Documentation](https://pynetx.readthedocs.io/en/latest/)  
+Source code: [GitHub Repository](https://github.com/jackofsometrades99/pyNetX)  
+Package: [PyPI](https://pypi.org/project/pyNetX/)  
+Article: [Medium](https://medium.com/@get4sambhugn/i-created-a-new-python-library-for-netconf-f9f27475433c)
 ---
 
 ## Requirements
@@ -199,7 +245,7 @@ async def main():
       )
       
       # Asynchronously connect to the device
-      await status = client.connect_async()
+      status = await client.connect_async()
       
       # Retrieve configuration asynchronously
       config = await client.get_config_async(source="running")
@@ -270,7 +316,8 @@ For every synchronous method, there is an asynchronous counterpart that returns 
 - **`connect_async()`**
 - **`disconnect_async()`**
 - **`send_rpc_async(rpc="")`**
-- **`next_notificaiton()`**
+- **`next_notification()`**
+  Polls the internal notification queue. This method is not awaitable; call it directly.
 - **`get_async(filter="")`**
 - **`get_config_async(source="running", filter="")`**
 - **`copy_config_async(target, source)`**
@@ -299,21 +346,24 @@ These methods can be used in both synchronous and asynchronous operations:
   ```
 
 - **`set_notification_reactor_count(nThreads)`**
-    Reconfigure how many background epoll-reactor threads PyNetX
-    will run to monitor notification sockets.
+  Configures how many background epoll reactor threads pyNetX
+  uses to monitor notification sockets.
 
-    By default you should first call init(total_devices) or pass
-    your preferred count here.  Each reactor thread will manage
-    roughly FD_count / nThreads file descriptors.  Calling this
-    at any time will tear down and rebuild the pool, then
-    rebalance all existing subscriptions evenly across the new
-    set of threads.
+  If this function is not called, pyNetX automatically
+  creates one reactor when the first notification
+  subscription is registered.
+
+  For large deployments, call this before
+  creating many subscriptions:
 
   ```python
   import pyNetX
   # Create 8 epoll‐based reactors to handle your notification streams
   pyNetX.set_notification_reactor_count(8)
   ```
+
+  Existing subscriptions are rebalanced when the reactor count is changed,
+  but applications should prefer configuring this once during startup.
 
 ## Exception Handling
 

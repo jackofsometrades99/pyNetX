@@ -38,7 +38,15 @@ public:
             worker.tasks.pop();
             }
             worker.inflight.fetch_sub(1, std::memory_order_relaxed);
-            task();
+            try {
+                task();
+            } catch (const std::exception& e) {
+                std::cerr << "ThreadPool worker swallowed exception: "
+                        << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "ThreadPool worker swallowed unknown exception"
+                        << std::endl;
+            }
         }
         });
     }
