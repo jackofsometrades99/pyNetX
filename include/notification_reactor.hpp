@@ -4,6 +4,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <memory>
 #include <unordered_map>
 
 class NetconfClient;
@@ -21,7 +22,7 @@ public:
     ~NotificationReactor();
 
     // register/unregister
-    void add(int fd, NetconfClient* client);
+    void add(int fd, std::weak_ptr<NetconfClient> client);
     void remove(int fd);
 
 private:
@@ -31,7 +32,7 @@ private:
     std::thread _reactor_thread;
     std::atomic<bool> _running{false};
     std::mutex _mtx;
-    std::unordered_map<int,NetconfClient*> _handlers;
+    std::unordered_map<int,std::weak_ptr<NetconfClient>> _handlers;
 };
 
 #endif // NOTIFICATION_REACTOR_HPP

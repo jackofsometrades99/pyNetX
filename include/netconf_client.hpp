@@ -215,6 +215,7 @@ public:
                                    bool do_validate=false);
     std::string next_notification();
     void on_notification_ready(int fd);
+    void mark_notification_dead() noexcept;
 
     // ----------------------- Synchronous Wrappers -------------------------
 
@@ -323,6 +324,12 @@ private:
     std::mutex session_mutex_;
     std::mutex ssh_mutex_;
     std::mutex dns_mutex_;
+
+    // Protects notif_session_, notif_channel_, notif_socket_,
+    // notif_is_connected_, and notif_is_blocking_.
+    // mutable because is_subscription_active() is const.
+    mutable std::mutex notif_mutex_;
+
     EpollRAII epoll_fd_;            // Managed epoll descriptor
     bool is_connected_       = false;
     bool is_blocking_        = false;

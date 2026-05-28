@@ -129,9 +129,12 @@ in parallel (subject to resource and performance constraints).
                     # Asynchronously receive notifications for a short duration
                     end_time = asyncio.get_event_loop().time() + 5  # e.g., 5 seconds
                     while asyncio.get_event_loop().time() < end_time:
-                        notification = await client.next_notification()
-                        if notification:
-                            print(f"[{dev['hostname']}] Notification:\n{notification}\n")
+                        notification = client.next_notification()
+                        if not notification:
+                            await asyncio.sleep(0.01)
+                            continue
+
+                        print(f"[{dev['hostname']}] Notification:\n{notification}\n")
 
                     # Disconnect
                     await client.disconnect_async()

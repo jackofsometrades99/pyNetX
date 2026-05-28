@@ -7,6 +7,11 @@
 #include <mutex>
 #include <algorithm>
 #include <thread>
+#include <memory>
+
+// explicit forward declaration for use
+// in the manager without including the full client header
+class NetconfClient; 
 
 class NotificationReactorManager {
 public:
@@ -23,7 +28,7 @@ public:
   void set_reactor_count(size_t new_count);
 
   /// Register a new notification FD → client
-  void add(int fd, NetconfClient* client);
+  void add(int fd, std::shared_ptr<NetconfClient> client);
 
   /// Unregister an FD
   void remove(int fd);
@@ -34,6 +39,6 @@ private:
   std::vector<std::unique_ptr<NotificationReactor>> reactors_;
   std::vector<size_t> device_counts_;
   std::unordered_map<int,size_t> fd_to_reactor_;
-  std::unordered_map<int,NetconfClient*> fd_to_client_;
+  std::unordered_map<int,std::weak_ptr<NetconfClient>> fd_to_client_;
   std::mutex mtx_;
 };
