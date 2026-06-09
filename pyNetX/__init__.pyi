@@ -11,7 +11,18 @@ class NetconfAuthError(PermissionError): ...
 class NetconfChannelError(OSError): ...
 
 class NetconfClient:
-    def __init__(self, hostname: str, username: str, password: str, port: int = 830, key_path: str = "", connect_timeout: int = 60, read_timeout: int = 60, notif_queue_size: int = -1) -> None: ...
+    def __init__(
+        self,
+        hostname: str,
+        username: str,
+        password: str,
+        port: int = 830,
+        key_path: str = "",
+        connect_timeout: int = 60,
+        read_timeout: int = 60,
+        notif_queue_size: int = -1,
+        socket_connect_timeout: int = 5
+    ) -> None: ...
     # Synchronous methods
     def connect_sync(self) -> bool: ...
     def disconnect_sync(self) -> None: ...

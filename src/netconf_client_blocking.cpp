@@ -462,9 +462,18 @@ std::string NetconfClient::commit_blocking() {
 std::string NetconfClient::locked_edit_config_blocking(const std::string& target,
     const std::string& config,
     bool do_validate) {
-    lock_blocking(target);
-    std::string reply = edit_config_blocking(target, config, do_validate);
-    commit_blocking();
-    unlock_blocking(target);
-    return reply;
+    try {
+        lock_blocking(target);
+        std::string reply = edit_config_blocking(target, config, do_validate);
+        commit_blocking();
+        unlock_blocking(target);
+        return reply;
+    } catch (const std::exception& err) {
+        try {
+            unlock_blocking(target);
+        } catch (...) {
+            // Ignore unlock errors since we are already handling an exception.
+        }
+        throw NetconfException("Unable to complete operation: " + std::string(err.what()));
+    }
 }
