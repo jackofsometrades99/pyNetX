@@ -8,8 +8,15 @@
 #include <thread>
 #include <iostream>
 #include <libssh2.h>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <iterator>
+#include <mutex>
+#include <vector>
 
 namespace py = pybind11;
+
 
 // ---- Register custom exceptions with Python
 void register_exceptions(py::module_ &m) {
@@ -33,6 +40,7 @@ inline bool fut_pending(const py::object &f)
     return !(f.attr("done")().cast<bool>());
 }
 
+
 inline void reset_py_objects_safely(
     std::shared_ptr<py::object>& loop_ptr,
     std::shared_ptr<py::object>& py_future_ptr
@@ -47,6 +55,117 @@ inline void reset_py_objects_safely(
     }
 }
 
+
+inline py::object python_exception_from_cpp_exception(const std::exception& e) {
+    py::module_ pyNetX = py::module_::import("pyNetX");
+
+    if (dynamic_cast<const NetconfConnectionRefused*>(&e)) {
+        return pyNetX.attr("NetconfConnectionRefusedError")(e.what());
+    }
+    if (dynamic_cast<const NetconfAuthError*>(&e)) {
+        return pyNetX.attr("NetconfAuthError")(e.what());
+    }
+    if (dynamic_cast<const NetconfChannelError*>(&e)) {
+        return pyNetX.attr("NetconfChannelError")(e.what());
+    }
+    if (dynamic_cast<const NetconfException*>(&e)) {
+        return pyNetX.attr("NetconfException")(e.what());
+    }
+
+    auto builtins = py::module_::import("builtins");
+    return builtins.attr("RuntimeError")(e.what());
+}
+
+
+namespace {
+
+    constexpr auto ASYNC_FUTURE_POLL_INTERVAL = std::chrono::milliseconds(50);
+
+    class AsyncFutureDispatcher {
+    public:
+        static AsyncFutureDispatcher& instance() {
+            // Intentionally leaked: avoids Python-finalization order problems with
+            // a global C++ object whose thread may still hold Python references.
+            static AsyncFutureDispatcher* dispatcher = new AsyncFutureDispatcher();
+            return *dispatcher;
+        }
+
+        void add(std::function<bool()> poller) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                pending_.emplace_back(std::move(poller));
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        AsyncFutureDispatcher()
+            : worker_([this]() { run(); })
+        {
+            // The dispatcher owns process-lifetime state through the leaked
+            // singleton above. Detaching avoids a join during interpreter shutdown.
+            worker_.detach();
+        }
+
+        void run() {
+            std::vector<std::function<bool()>> batch;
+
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+
+                    if (pending_.empty()) {
+                        cv_.wait(lock, [this]() { return !pending_.empty(); });
+                    } else {
+                        cv_.wait_for(lock, ASYNC_FUTURE_POLL_INTERVAL);
+                    }
+
+                    batch.swap(pending_);
+                }
+
+                std::vector<std::function<bool()>> still_pending;
+                still_pending.reserve(batch.size());
+
+                for (auto& poller : batch) {
+                    bool done = true;
+
+                    try {
+                        done = poller();
+                    } catch (const std::exception& e) {
+                        std::cerr << "pyNetX async dispatcher dropped a poller: "
+                                << e.what() << std::endl;
+                    } catch (...) {
+                        std::cerr << "pyNetX async dispatcher dropped a poller with unknown error"
+                                << std::endl;
+                    }
+
+                    if (!done) {
+                        still_pending.emplace_back(std::move(poller));
+                    }
+                }
+
+                batch.clear();
+
+                if (!still_pending.empty()) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    pending_.insert(
+                        pending_.end(),
+                        std::make_move_iterator(still_pending.begin()),
+                        std::make_move_iterator(still_pending.end())
+                    );
+                }
+            }
+        }
+
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        std::vector<std::function<bool()>> pending_;
+        std::thread worker_;
+    };
+
+} // namespace
+
+
 // ---- Utility: wrap std::future<T> into an asyncio Future ----
 template <typename T>
 py::object wrap_future(std::future<T> fut)
@@ -59,78 +178,77 @@ py::object wrap_future(std::future<T> fut)
     auto loop_ptr = std::make_shared<py::object>(loop);
     auto py_future_ptr = std::make_shared<py::object>(py_future);
 
-    std::thread([sfut = std::move(sfut), loop_ptr, py_future_ptr]() mutable {
-        try {
-            while (sfut.wait_for(std::chrono::milliseconds(100)) !=
-                   std::future_status::ready) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            py::gil_scoped_acquire acquire;
-
-            if (!fut_pending(*py_future_ptr)) {
-                reset_py_objects_safely(loop_ptr, py_future_ptr);
-                return;
+    AsyncFutureDispatcher::instance().add(
+        [sfut = std::move(sfut), loop_ptr, py_future_ptr]() mutable -> bool {
+            if (sfut.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+                return false;
             }
 
             try {
-                T result = sfut.get();
+                py::gil_scoped_acquire acquire;
 
-                auto callback = py::cpp_function(
-                    [py_future_ptr, result](py::args) {
-                        if (fut_pending(*py_future_ptr)) {
-                            (*py_future_ptr).attr("set_result")(result);
-                        }
-                    }
-                );
+                if (!fut_pending(*py_future_ptr)) {
+                    reset_py_objects_safely(loop_ptr, py_future_ptr);
+                    return true;
+                }
 
                 try {
-                    (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    T result = sfut.get();
+
+                    auto callback = py::cpp_function(
+                        [py_future_ptr, result](py::args) {
+                            if (fut_pending(*py_future_ptr)) {
+                                (*py_future_ptr).attr("set_result")(result);
+                            }
+                        }
+                    );
+
+                    try {
+                        (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    } catch (const std::exception& e) {
+                        std::cerr << "pyNetX: call_soon_threadsafe(set_result) failed: "
+                                  << e.what() << std::endl;
+                    }
+
                 } catch (const std::exception& e) {
-                    std::cerr << "pyNetX: call_soon_threadsafe(set_result) failed: "
-                              << e.what() << std::endl;
+                    py::object exception_obj = python_exception_from_cpp_exception(e);
+
+                    auto callback = py::cpp_function(
+                        [py_future_ptr, exception_obj](py::args) {
+                            if (fut_pending(*py_future_ptr)) {
+                                (*py_future_ptr).attr("set_exception")(exception_obj);
+                            }
+                        }
+                    );
+
+                    try {
+                        (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    } catch (const std::exception& inner) {
+                        std::cerr << "pyNetX: call_soon_threadsafe(set_exception) failed: "
+                                  << inner.what() << std::endl;
+                    }
                 }
+
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
 
             } catch (const std::exception& e) {
-                std::string msg = e.what();
-
-                auto builtins = py::module::import("builtins");
-                py::object exception_obj = builtins.attr("ValueError")(msg);
-
-                auto callback = py::cpp_function(
-                    [py_future_ptr, exception_obj](py::args) {
-                        if (fut_pending(*py_future_ptr)) {
-                            (*py_future_ptr).attr("set_exception")(exception_obj);
-                        }
-                    }
-                );
-
-                try {
-                    (*loop_ptr).attr("call_soon_threadsafe")(callback);
-                } catch (const std::exception& inner) {
-                    std::cerr << "pyNetX: call_soon_threadsafe(set_exception) failed: "
-                              << inner.what() << std::endl;
-                }
+                std::cerr << "pyNetX async dispatcher failed to complete future: "
+                          << e.what() << std::endl;
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
+            } catch (...) {
+                std::cerr << "pyNetX async dispatcher failed to complete future with unknown exception"
+                          << std::endl;
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
             }
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
-
-        } catch (const std::exception& e) {
-            std::cerr << "pyNetX async watcher thread failed: "
-                      << e.what() << std::endl;
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
-
-        } catch (...) {
-            std::cerr << "pyNetX async watcher thread failed with unknown exception"
-                      << std::endl;
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
         }
-    }).detach();
+    );
 
     return py_future;
 }
+
 
 // Specialization for std::future<void>
 template <>
@@ -144,75 +262,73 @@ py::object wrap_future<void>(std::future<void> fut)
     auto loop_ptr = std::make_shared<py::object>(loop);
     auto py_future_ptr = std::make_shared<py::object>(py_future);
 
-    std::thread([sfut = std::move(sfut), loop_ptr, py_future_ptr]() mutable {
-        try {
-            while (sfut.wait_for(std::chrono::milliseconds(100)) !=
-                   std::future_status::ready) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            py::gil_scoped_acquire acquire;
-
-            if (!fut_pending(*py_future_ptr)) {
-                reset_py_objects_safely(loop_ptr, py_future_ptr);
-                return;
+    AsyncFutureDispatcher::instance().add(
+        [sfut = std::move(sfut), loop_ptr, py_future_ptr]() mutable -> bool {
+            if (sfut.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+                return false;
             }
 
             try {
-                sfut.get();
+                py::gil_scoped_acquire acquire;
 
-                auto callback = py::cpp_function(
-                    [py_future_ptr](py::args) {
-                        if (fut_pending(*py_future_ptr)) {
-                            (*py_future_ptr).attr("set_result")(py::none());
-                        }
-                    }
-                );
+                if (!fut_pending(*py_future_ptr)) {
+                    reset_py_objects_safely(loop_ptr, py_future_ptr);
+                    return true;
+                }
 
                 try {
-                    (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    sfut.get();
+
+                    auto callback = py::cpp_function(
+                        [py_future_ptr](py::args) {
+                            if (fut_pending(*py_future_ptr)) {
+                                (*py_future_ptr).attr("set_result")(py::none());
+                            }
+                        }
+                    );
+
+                    try {
+                        (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    } catch (const std::exception& e) {
+                        std::cerr << "pyNetX: call_soon_threadsafe(set_result void) failed: "
+                                  << e.what() << std::endl;
+                    }
+
                 } catch (const std::exception& e) {
-                    std::cerr << "pyNetX: call_soon_threadsafe(set_result void) failed: "
-                              << e.what() << std::endl;
+                    py::object exception_obj = python_exception_from_cpp_exception(e);
+
+                    auto callback = py::cpp_function(
+                        [py_future_ptr, exception_obj](py::args) {
+                            if (fut_pending(*py_future_ptr)) {
+                                (*py_future_ptr).attr("set_exception")(exception_obj);
+                            }
+                        }
+                    );
+
+                    try {
+                        (*loop_ptr).attr("call_soon_threadsafe")(callback);
+                    } catch (const std::exception& inner) {
+                        std::cerr << "pyNetX: call_soon_threadsafe(set_exception void) failed: "
+                                  << inner.what() << std::endl;
+                    }
                 }
+
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
 
             } catch (const std::exception& e) {
-                std::string msg = e.what();
-
-                auto builtins = py::module::import("builtins");
-                py::object exception_obj = builtins.attr("ValueError")(msg);
-
-                auto callback = py::cpp_function(
-                    [py_future_ptr, exception_obj](py::args) {
-                        if (fut_pending(*py_future_ptr)) {
-                            (*py_future_ptr).attr("set_exception")(exception_obj);
-                        }
-                    }
-                );
-
-                try {
-                    (*loop_ptr).attr("call_soon_threadsafe")(callback);
-                } catch (const std::exception& inner) {
-                    std::cerr << "pyNetX: call_soon_threadsafe(set_exception void) failed: "
-                              << inner.what() << std::endl;
-                }
+                std::cerr << "pyNetX async dispatcher failed to complete void future: "
+                          << e.what() << std::endl;
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
+            } catch (...) {
+                std::cerr << "pyNetX async dispatcher failed to complete void future with unknown exception"
+                          << std::endl;
+                reset_py_objects_safely(loop_ptr, py_future_ptr);
+                return true;
             }
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
-
-        } catch (const std::exception& e) {
-            std::cerr << "pyNetX async watcher thread failed: "
-                      << e.what() << std::endl;
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
-
-        } catch (...) {
-            std::cerr << "pyNetX async watcher thread failed with unknown exception"
-                      << std::endl;
-
-            reset_py_objects_safely(loop_ptr, py_future_ptr);
         }
-    }).detach();
+    );
 
     return py_future;
 }
@@ -248,7 +364,8 @@ PYBIND11_MODULE(pyNetX, m) {
                          const std::string &key_path,
                          int connect_timeout,
                          int read_timeout,
-                         int notif_queue_size) {
+                         int notif_queue_size,
+                         int socket_connect_timeout) {
             return std::make_shared<NetconfClient>(
                 hostname,
                 port,
@@ -257,7 +374,8 @@ PYBIND11_MODULE(pyNetX, m) {
                 key_path,
                 connect_timeout,
                 read_timeout,
-                notif_queue_size
+                notif_queue_size,
+                socket_connect_timeout
             );
         }),
         py::arg("hostname"),
@@ -267,7 +385,8 @@ PYBIND11_MODULE(pyNetX, m) {
         py::arg("key_path") = "",
         py::arg("connect_timeout") = 60,
         py::arg("read_timeout") = 60,
-        py::arg("notif_queue_size") = -1)
+        py::arg("notif_queue_size") = -1,
+        py::arg("socket_connect_timeout") = 5)
         // Synchronous methods
         .def("connect_sync", &NetconfClient::connect_sync)
         .def("disconnect_sync", &NetconfClient::disconnect_sync)

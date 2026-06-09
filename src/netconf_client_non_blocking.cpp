@@ -26,7 +26,7 @@ bool NetconfClient::connect_non_blocking() {
     int rc = 0;
     int user_given_timeout = connect_timeout_; // TO DO: Modify to accept this value from user
     int current_timeout = 0;
-    int socket_connect_timeout = user_given_timeout > 10 ? user_given_timeout *100 : 2000;
+    int socket_connect_timeout = socket_connect_timeout_ * 1000 ; // Convert to milliseconds for poll
     auto start_time = std::chrono::steady_clock::now();
     auto connect_timeout = std::chrono::seconds(user_given_timeout);
     try {
@@ -242,7 +242,7 @@ bool NetconfClient::connect_non_blocking() {
         }
 
         // Now complete the NETCONF hello exchange.
-        std::string server_hello = read_until_eom_non_blocking(channel_.get(), session_.get(), read_timeout_);
+        std::string server_hello = read_until_eom_non_blocking(channel_.get(), session_.get(), socket_.get(), read_timeout_);
         if (server_hello.find("capabilities") != std::string::npos) {
             send_client_hello_non_blocking(channel_.get(), session_.get(), socket_.get());
         } else {
@@ -265,9 +265,7 @@ bool NetconfClient::connect_notification_non_blocking() {
     int rc = 0;
     int user_given_timeout    = connect_timeout_;
     int current_timeout       = 0;
-    int socket_connect_timeout= user_given_timeout > 10
-                                ? user_given_timeout * 100
-                                : 2000;
+    int socket_connect_timeout= socket_connect_timeout_ * 1000; // Convert to milliseconds for poll
     auto start_time    = std::chrono::steady_clock::now();
     auto connect_deadline = std::chrono::seconds(user_given_timeout);
 
@@ -482,6 +480,7 @@ bool NetconfClient::connect_notification_non_blocking() {
         std::string server_hello = read_until_eom_non_blocking(
             notif_channel_.get(),
             notif_session_.get(),
+            notif_socket_.get(),
             read_timeout_
         );
         if (server_hello.find("capabilities") == std::string::npos) {
@@ -555,6 +554,7 @@ void NetconfClient::on_notification_ready(int fd) {
             xml = read_until_eom_non_blocking(
                 notif_channel_.get(),
                 notif_session_.get(),
+                fd,
                 read_timeout_
             );
         }
@@ -849,6 +849,11 @@ std::string NetconfClient::locked_edit_config_non_blocking(
         return reply;
     } catch (const std::exception& err) {
         // RAII wrappers ensure that session_, channel_, and socket_ are cleaned up automatically.
+        try {
+            unlock_non_blocking(target);
+        } catch (...) {
+            // Ignore unlock errors since we are already handling an exception.
+        }
         throw NetconfException("Unable to complete operation: " + std::string(err.what()));
     }
 }

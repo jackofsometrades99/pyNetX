@@ -163,7 +163,8 @@ public:
         const std::string& hostname, int port,
         const std::string& username, const std::string& password,
         const std::string& key_path = "", int connect_timeout = 60,
-        int read_timeout = 60, int notif_queue_size = -1
+        int read_timeout = 60, int notif_queue_size = -1,
+        int socket_connect_timeout = 5
     );
     ~NetconfClient();
 
@@ -281,6 +282,7 @@ private:
     static std::string read_until_eom_non_blocking(
         LIBSSH2_CHANNEL *chan,
         LIBSSH2_SESSION *sess,
+        int soc_fd,
         int read_timeout
     );
     static std::string build_client_hello();
@@ -319,6 +321,7 @@ private:
     int connect_timeout_;
     int read_timeout_;
     int _notif_queue_max_size_;
+    int socket_connect_timeout_;
     std::string resolved_host_;
 
     std::mutex session_mutex_;

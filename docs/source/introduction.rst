@@ -18,15 +18,36 @@ Key Features
 2. **Synchronous & Asynchronous API**  
    - Choose either blocking (sync) or non-blocking (async) methods for each operation. 
    - Async support integrates with Python’s built-in ``asyncio`` library.
-3. **Thread Pool Management**  
-    - A global thread pool manages concurrent tasks, ensuring thread safety 
-    and efficient resource usage.
-4. **Error Handling with Custom Exceptions**  
+3. **Thread Pool and Async Completion Management**  
+    - A global thread pool manages NETCONF worker tasks across clients/devices.
+    - Starting with v2.0.4, async completion uses one shared dispatcher instead
+      of creating one detached watcher thread per async operation.
+4. **Connection and Read Timeout Controls**
+    - Configure total connect timeout, read timeout, notification queue size,
+      and socket-level connect timeout from the ``NetconfClient`` constructor.
+5. **Error Handling with Custom Exceptions**  
     - pyNetX defines Python exceptions for common NETCONF errors, such as 
-    authentication failure, connection refusal, or channel problems.
-5. **C++ Speed Underneath**  
+      authentication failure, connection refusal, or channel problems.
+    - Starting with v2.0.4, async methods preserve these custom exception types
+      instead of converting failures to ``ValueError``.
+6. **C++ Speed Underneath**  
     - Uses C++ (via pybind11) for heavy lifting (SSH communication, XML parsing, etc.), 
     while exposing a Pythonic interface.
+
+
+What Changed in v2.0.4
+----------------------
+- Added public documentation for ``socket_connect_timeout`` in the
+  ``NetconfClient`` constructor.
+- Non-blocking reads now wait on socket readiness with ``poll()`` instead of
+  repeatedly retrying on ``EAGAIN``. This reduces CPU usage when devices delay
+  replies or notifications.
+- Async wrappers now use one shared completion dispatcher instead of one
+  detached watcher thread per async operation.
+- Async exceptions now preserve pyNetX exception classes such as
+  ``NetconfAuthError`` and ``NetconfConnectionRefusedError``.
+- Normal RPC calls on the same ``NetconfClient`` channel remain serialized:
+  pyNetX sends one RPC, waits for its reply, and then sends the next RPC.
 
 System Requirements
 -------------------
@@ -59,7 +80,7 @@ Getting Started
 
    .. code-block:: bash
 
-      pip install pyNetX
+      pip install pyNetX==2.0.4
 
    Or from source:
 
@@ -76,8 +97,15 @@ Getting Started
       from pyNetX import NetconfClient
 
       # Synchronous example
-      client = NetconfClient(hostname="192.168.1.1", port=830,
-                             username="admin", password="admin")
+      client = NetconfClient(
+          hostname="192.168.1.1",
+          port=830,
+          username="admin",
+          password="admin",
+          connect_timeout=30,
+          read_timeout=30,
+          socket_connect_timeout=5,
+      )
       client.connect_sync()
       running_config = client.get_config_sync(source="running")
       print(running_config)

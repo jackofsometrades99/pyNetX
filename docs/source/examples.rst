@@ -27,8 +27,8 @@ an infinite loop.
    def sync_multi_device_example():
        # A sample list of devices to manage
        devices = [
-           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin"},
-           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin"},
+           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
+           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
        ]
 
        while True:
@@ -39,7 +39,10 @@ an infinite loop.
                         port=dev["port"],
                         username=dev["username"],
                         password=dev["password"],
-                        notif_queue_size=100  # Optional: set a queue size for notifications
+                        connect_timeout=30,
+                        read_timeout=30,
+                        notif_queue_size=100,  # Optional: set a queue size for notifications
+                        socket_connect_timeout=dev.get("socket_connect_timeout", 5),
                     )
 
                     # Connect to the NETCONF server
@@ -64,8 +67,11 @@ an infinite loop.
                     # Disconnect
                     client.disconnect_sync()
                     print(f"Disconnected from {dev['hostname']}\n")
-                except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
-                    # Handle exceptions here
+                except (NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+                    # Handle known pyNetX exceptions here
+                    pass
+                except Exception as error:
+                    # Handle unexpected exceptions here
                     pass
            # Wait for 60 seconds before reconnecting
            print("Waiting 60 seconds before next iteration...\n")
@@ -87,6 +93,7 @@ in parallel (subject to resource and performance constraints).
 .. code-block:: python
 
    import asyncio
+   import pyNetX
    from pyNetX import (
         NetconfClient,
         NetconfConnectionRefusedError,
@@ -96,10 +103,15 @@ in parallel (subject to resource and performance constraints).
    )
 
    async def async_multi_device_example():
+       # Controls how many NETCONF worker operations can run concurrently
+       # across clients/devices. Async completion uses a shared dispatcher
+       # internally in v2.0.4+.
+       pyNetX.set_threadpool_size(10)
+
        # A sample list of devices to manage
        devices = [
-           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin"},
-           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin"},
+           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
+           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
        ]
 
        while True:
@@ -111,7 +123,10 @@ in parallel (subject to resource and performance constraints).
                         port=dev["port"],
                         username=dev["username"],
                         password=dev["password"],
-                        notif_queue_size=100  # Optional: set a queue size for notifications
+                        connect_timeout=30,
+                        read_timeout=30,
+                        notif_queue_size=100,  # Optional: set a queue size for notifications
+                        socket_connect_timeout=dev.get("socket_connect_timeout", 5),
                     )
 
                     # Asynchronously connect
@@ -139,8 +154,11 @@ in parallel (subject to resource and performance constraints).
                     # Disconnect
                     await client.disconnect_async()
                     print(f"Disconnected from {dev['hostname']}\n")
-                except (Exception, NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
-                    # Handle exceptions here
+                except (NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
+                    # Handle known pyNetX exceptions here
+                    pass
+                except Exception as error:
+                    # Handle unexpected exceptions here
                     pass
            # Wait 60 seconds before next iteration
            print("Waiting 60 seconds before next iteration...\n")
@@ -162,10 +180,18 @@ Notes & Customization
 - **Error Handling**: Consider catching exceptions like
   ``NetconfAuthError`` or ``NetconfConnectionRefusedError`` around
   the connect statements.  
+- **Timeouts**: Use ``connect_timeout``, ``read_timeout``, and
+  ``socket_connect_timeout`` to control connection setup and read behavior.
 - **Thread Pool Size**: If you need to handle many devices concurrently
   in the async example, you might want to increase the global thread pool
   size by calling ``pyNetX.set_threadpool_size(n)`` before creating
-  any clients.
+  any clients. Starting with v2.0.4, async completion uses a shared dispatcher
+  instead of one watcher thread per async call.
+- **Same-Client Serialization**: Multiple RPCs submitted on the same
+  ``NetconfClient`` RPC channel are serialized. Use separate clients/sessions
+  for true parallelism across devices.
+- **Async Exceptions**: Async methods raise the same pyNetX exception classes
+  as synchronous methods in v2.0.4+.
 
 These examples serve as a starting point for building more robust
 network management tools using **pyNetX**.
