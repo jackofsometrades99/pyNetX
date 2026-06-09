@@ -20,7 +20,10 @@ Usage Examples:
       port=830,
       username="admin",
       password="admin",
-      notif_queue_size=100  # Optional: set a queue size for notifications
+      connect_timeout=30,
+      read_timeout=30,
+      notif_queue_size=100,  # Optional: set a queue size for notifications
+      socket_connect_timeout=5,
    )
    client.connect_sync()
    response = client.get_config_sync()
@@ -35,13 +38,72 @@ Usage Examples:
            port=830,
            username="admin",
            password="admin",
-           notif_queue_size=100  # Optional: set a queue size for notifications
+           connect_timeout=30,
+           read_timeout=30,
+           notif_queue_size=100,  # Optional: set a queue size for notifications
+           socket_connect_timeout=5,
        )
        await client.connect_async()
        response = await client.get_config_async()
        await client.disconnect_async()
 
    asyncio.run(main())
+
+Release Notes for v2.0.4
+-------------------------
+
+The v2.0.4 release keeps the public sync/async method names unchanged, but
+documents and improves the following runtime behavior:
+
+- ``socket_connect_timeout`` is part of the public ``NetconfClient`` constructor.
+- Non-blocking channel reads now wait with ``poll()`` on ``EAGAIN`` instead of
+  busy-spinning.
+- Async methods now use one shared internal completion dispatcher instead of
+  creating one detached watcher thread per async operation.
+- Async methods now preserve pyNetX custom exception types instead of converting
+  failures to ``ValueError``.
+- One ``NetconfClient`` RPC channel remains request/response serialized: pyNetX
+  sends one RPC, waits for its reply, and only then sends the next RPC on that
+  same channel.
+
+Constructor
+-----------
+
+Use keyword arguments for clarity, especially because the C++ binding exposes
+``port`` before ``username`` and ``password``.
+
+.. code-block:: python
+
+   client = NetconfClient(
+       hostname="192.168.1.1",
+       port=830,
+       username="admin",
+       password="admin",
+       key_path="",
+       connect_timeout=60,
+       read_timeout=60,
+       notif_queue_size=-1,
+       socket_connect_timeout=5,
+   )
+
+**Parameters**
+
+- **hostname** (str): NETCONF device hostname or IP address.
+- **port** (int): NETCONF SSH port. Defaults to ``830``.
+- **username** (str): SSH username.
+- **password** (str): SSH password.
+- **key_path** (str): Reserved for key-based authentication. Password
+  authentication is the currently implemented authentication path.
+- **connect_timeout** (int): Maximum time, in seconds, allowed for the full
+  connection setup. Defaults to ``60``.
+- **read_timeout** (int): Maximum inactivity time, in seconds, while waiting
+  for NETCONF data. Defaults to ``60``. Use a negative value to wait
+  indefinitely.
+- **notif_queue_size** (int): Maximum queued async notifications. ``-1`` means
+  unbounded. Defaults to ``-1``.
+- **socket_connect_timeout** (int): Socket-level TCP connect timeout, in
+  seconds. Defaults to ``5``. It must be greater than ``0`` and cannot be
+  greater than ``connect_timeout``.
 
 Synchronous Methods
 -------------------
@@ -64,7 +126,12 @@ Establishes a synchronous NETCONF session with the remote device.
 
    from pyNetX import NetconfClient
 
-   client = NetconfClient("192.168.1.1", 830, "admin", "admin")
+   client = NetconfClient(
+       hostname="192.168.1.1",
+       port=830,
+       username="admin",
+       password="admin",
+   )
    status = client.connect_sync()
    print("Connection status:", status)
 
@@ -365,6 +432,16 @@ Asynchronous Methods
 Below are the asynchronous counterparts, returning awaitable tasks that integrate
 with Python’s ``asyncio``.
 
+Starting with v2.0.4, pyNetX uses one shared internal async completion
+dispatcher. NETCONF work still runs in the shared worker thread pool, but the
+Python ``asyncio.Future`` completion step is handled by a shared dispatcher
+instead of one detached watcher thread per async call. This is an internal
+behavior change and does not change how async methods are called.
+
+Async methods raise the same public pyNetX exception classes as synchronous
+methods: ``NetconfConnectionRefusedError``, ``NetconfAuthError``,
+``NetconfChannelError``, and ``NetconfException``.
+
 connect_async()
 ~~~~~~~~~~~~~~~
 
@@ -385,7 +462,12 @@ Asynchronously establishes a NETCONF session.
    from pyNetX import NetconfClient
 
    async def main():
-       client = NetconfClient("192.168.1.1", 830, "admin", "admin")
+       client = NetconfClient(
+           hostname="192.168.1.1",
+           port=830,
+           username="admin",
+           password="admin",
+       )
        await client.connect_async()
        print("Async connection established.")
        await client.disconnect_async()
@@ -458,6 +540,27 @@ but it should be called directly, not with ``await``.
    notification = client.next_notification()
    if notification:
        print("Notification received:", notification)
+
+
+is_subscription_active()
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Description**
+Returns whether the client currently has an active notification subscription.
+
+**Parameters**
+- None
+
+**Returns**
+- ``bool``: ``True`` when a notification subscription is active, otherwise
+  ``False``.
+
+**Example**
+
+.. code-block:: python
+
+   if client.is_subscription_active():
+       print("Notification subscription is active")
 
 
 get_async(filter="")
@@ -689,7 +792,7 @@ Common Methods
 Below are the some common methods that can be used in both sync and async structures.
 
 delete_subscription()
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 **Description**  
 Deletes an established NETCONF notifications subscription for a client.
@@ -708,13 +811,21 @@ Deletes an established NETCONF notifications subscription for a client.
 
 
 set_threadpool_size(nThreads)
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Description**  
-Sets the number of threads in the shared task pool.
+Sets the number of worker threads in the shared NETCONF task pool. This controls
+how many NETCONF worker operations can run concurrently across clients/devices.
+
+Starting with v2.0.4, async completion is handled by a shared dispatcher thread,
+so pyNetX no longer creates one detached watcher thread per async operation.
+
+Operations on the same ``NetconfClient`` RPC channel are still serialized. If
+multiple async RPCs are submitted on the same client, pyNetX sends one request,
+waits for its reply, and then sends the next request on that channel.
 
 **Parameters**  
-- **target** (int): Number of threads present in thread pool.
+- **nThreads** (int): Number of worker threads in the shared task pool.
 
 **Returns**  
 - None.
@@ -724,11 +835,11 @@ Sets the number of threads in the shared task pool.
 .. code-block:: python
 
    import pyNetX
-   pyNetX.set_threadpool_size(10) # Creates 10 threads in the shared task pool.
+   pyNetX.set_threadpool_size(10)
 
 
 set_notification_reactor_count(nThreads)
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Description**
 Configures how many background epoll reactor threads pyNetX uses
@@ -755,12 +866,16 @@ creating many subscriptions.
 
 Common Exceptions
 -----------------
-All methods may raise one of the following custom exceptions upon failure:
+All synchronous and asynchronous methods may raise one of the following custom
+exceptions upon failure:
 
-- **NetconfConnectionRefusedError**  
-- **NetconfAuthError**  
-- **NetconfChannelError**  
-- **NetconfException**  
+- **NetconfConnectionRefusedError**
+- **NetconfAuthError**
+- **NetconfChannelError**
+- **NetconfException**
+
+Starting with v2.0.4, async methods preserve these exception classes. Earlier
+versions could convert async failures to ``ValueError``.
 
 For details, see :doc:`introduction` or check out the usage examples in :doc:`examples`.
 
