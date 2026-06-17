@@ -215,6 +215,7 @@ pip install pyNetX==2.0.2
 ## Documentation
 
 Full documentation: [pyNetX Official Documentation](https://pynetx.readthedocs.io/en/latest/)  
+Website: [pyNetX Website](https://jackofsometrades99.github.io/pynetx-website/)
 Source code: [GitHub Repository](https://github.com/jackofsometrades99/pyNetX)  
 Package: [PyPI](https://pypi.org/project/pyNetX/)  
 Article: [Medium](https://medium.com/@get4sambhugn/i-created-a-new-python-library-for-netconf-f9f27475433c)
