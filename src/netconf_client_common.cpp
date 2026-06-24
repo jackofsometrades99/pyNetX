@@ -25,14 +25,19 @@ NetconfClient::NetconfClient(
     const std::string& hostname, int port,
     const std::string& username, const std::string& password,
     const std::string& key_path, int connect_timeout, int read_timeout,
-    int notif_queue_size, int socket_connect_timeout
+    int notif_queue_size, int socket_connect_timeout,
+    int notif_incomplete_max_kb, int notif_incomplete_timeout,
+    int notif_drop_event_threshold
 )
     : hostname_(hostname), port_(port),
       username_(username), password_(password), key_path_(key_path),
       session_(nullptr), channel_(nullptr), notif_session_(nullptr),
       notif_channel_(nullptr), connect_timeout_(connect_timeout),
       read_timeout_(read_timeout), _notif_queue_max_size_(notif_queue_size),
-      socket_connect_timeout_(socket_connect_timeout)
+      socket_connect_timeout_(socket_connect_timeout),
+      notif_incomplete_max_kb_(notif_incomplete_max_kb),
+      notif_incomplete_timeout_(notif_incomplete_timeout),
+      notif_drop_event_threshold_(notif_drop_event_threshold)
 {
     if (hostname_.empty()) {
         throw std::invalid_argument("hostname cannot be empty");
@@ -67,6 +72,27 @@ NetconfClient::NetconfClient(
     if (_notif_queue_max_size_ < -1) {
         throw std::invalid_argument(
             "notif_queue_size must be -1 for unbounded or >= 0 for bounded queue"
+        );
+    }
+    if (notif_incomplete_max_kb_ < -1 || notif_incomplete_max_kb_ == 0) {
+        throw std::invalid_argument(
+            "notif_incomplete_max_kb must be -1 to disable or greater than 0"
+        );
+    }
+
+    if (notif_incomplete_timeout_ < -1 || notif_incomplete_timeout_ == 0) {
+        throw std::invalid_argument(
+            "notif_incomplete_timeout must be -1 to disable or greater than 0"
+        );
+    }
+    if (notif_incomplete_max_kb_ < 0 && notif_incomplete_timeout_ < 0) {
+        throw std::invalid_argument(
+            "At least one of notif_incomplete_max_kb or notif_incomplete_timeout must be enabled"
+        );
+    }
+    if (notif_drop_event_threshold_ <= 0) {
+        throw std::invalid_argument(
+            "notif_drop_event_threshold must be greater than 0"
         );
     }
 }

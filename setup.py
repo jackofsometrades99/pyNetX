@@ -8,16 +8,18 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="pyNetX",
-    version="2.0.4",
+    version="2.0.5",
     description="NETCONF client with truly async capabilities",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Sambhu Nampoothiri G",
     license="Apache-2.0",
     packages=["pyNetX"],
+    package_data={"pyNetX": ["__init__.pyi", "py.typed"]},
+    include_package_data=True,
     cmake_args=[
-        "-DCMAKE_BUILD_TYPE=Debug",
-        "-DPYBIND11_DETAILED_ERROR_MESSAGES=ON",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DPYBIND11_DETAILED_ERROR_MESSAGES=OFF",
     ],
     zip_safe=False,
 )

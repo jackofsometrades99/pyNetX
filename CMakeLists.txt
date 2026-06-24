@@ -26,6 +26,7 @@ pybind11_add_module(pyNetX
     src/thread_pool_global.cpp
     src/notification_reactor.cpp
     src/notification_reactor_manager.cpp
+    src/notification_event_bus.cpp
 )
 
 target_include_directories(pyNetX PRIVATE

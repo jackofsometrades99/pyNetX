@@ -1,4 +1,5 @@
 #include "netconf_client.hpp"
+#include "notification_event_bus.hpp"
 #include "notification_reactor_manager.hpp"
 #include <stdexcept>
 #include <iostream>
@@ -555,7 +556,9 @@ void NetconfClient::on_notification_ready(int fd) {
                 notif_channel_.get(),
                 notif_session_.get(),
                 fd,
-                read_timeout_
+                -1,  // actual notification read: wait until EOM or incomplete guard
+                notif_incomplete_max_kb_,
+                notif_incomplete_timeout_
             );
         }
 
@@ -563,20 +566,90 @@ void NetconfClient::on_notification_ready(int fd) {
             return;
         }
 
+        const bool is_incomplete_notification =
+            (xml.find("]]>]]>") == std::string::npos);
+
+        std::vector<NotificationHealthEvent> events_to_emit;
+        bool queued_notification = false;
+
         {
             std::lock_guard<std::mutex> lk(_notif_queue_mtx);
 
-            if (_notif_queue_max_size_ >= 0 &&
-                _notif_queue.size() >= static_cast<size_t>(_notif_queue_max_size_)) {
-                std::cerr << "Notification queue full, dropping notification"
-                          << std::endl;
-                return;
+            if (is_incomplete_notification) {
+                ++_notif_incomplete_count;
+                events_to_emit.push_back(
+                    make_notification_health_event_locked(
+                        "incomplete_notification",
+                        "Received notification bytes without NETCONF EOM; queued partial notification",
+                        fd,
+                        0,
+                        static_cast<std::int64_t>(xml.size())
+                    )
+                );
             }
 
-            _notif_queue.push_back(std::move(xml));
+            if (_notif_queue_max_size_ >= 0 &&
+                _notif_queue.size() >= static_cast<size_t>(_notif_queue_max_size_)) {
+                ++_notif_dropped_queue_full_count;
+
+                const std::uint64_t dropped_delta =
+                    _notif_dropped_queue_full_count - _notif_last_drop_event_count;
+
+                // Emit immediately when the queue first becomes full, then emit
+                // summarized updates every notif_drop_event_threshold additional
+                // drops. Default is 1, which emits one health event per dropped
+                // notification while the queue remains full.
+                const bool first_queue_full_event = !_notif_queue_full_state;
+
+                if (first_queue_full_event ||
+                    dropped_delta >= static_cast<std::uint64_t>(notif_drop_event_threshold_)) {
+                    _notif_queue_full_state = true;
+                    _notif_last_drop_event_count = _notif_dropped_queue_full_count;
+
+                    events_to_emit.push_back(
+                        make_notification_health_event_locked(
+                            first_queue_full_event
+                                ? "notification_queue_full"
+                                : "notification_drops_summary",
+                            "Notification queue is full; dropping notifications",
+                            fd,
+                            static_cast<std::int64_t>(dropped_delta),
+                            is_incomplete_notification
+                                ? static_cast<std::int64_t>(xml.size())
+                                : 0
+                        )
+                    );
+
+                    std::cerr
+                        << "Notification queue full, dropping notifications. "
+                        << "queue_size=" << _notif_queue.size()
+                        << " queue_max_size=" << _notif_queue_max_size_
+                        << " dropped_queue_full=" << _notif_dropped_queue_full_count
+                        << " dropped_delta=" << dropped_delta
+                        << std::endl;
+                }
+
+                // Do not enqueue or notify consumers. The health event stream
+                // carries the drop information to Python.
+            } else {
+                _notif_queue.push_back(std::move(xml));
+                queued_notification = true;
+
+                ++_notif_enqueued_count;
+
+                if (_notif_queue.size() > _notif_queue_high_watermark) {
+                    _notif_queue_high_watermark = _notif_queue.size();
+                }
+            }
         }
 
-        _notif_queue_cv.notify_one();
+        for (auto& event : events_to_emit) {
+            NotificationEventBus::instance().emit(std::move(event));
+        }
+
+        if (queued_notification) {
+            _notif_queue_cv.notify_one();
+        }
 
     } catch (const std::exception& e) {
         throw NetconfException(
@@ -585,7 +658,7 @@ void NetconfClient::on_notification_ready(int fd) {
     }
 }
 
-std::string NetconfClient::next_notification() {
+std::string NetconfClient::next_notification(int timeout_ms) {
     try {
         {
             std::lock_guard<std::mutex> guard(notif_mutex_);
@@ -605,11 +678,21 @@ std::string NetconfClient::next_notification() {
 
         std::unique_lock<std::mutex> lk(_notif_queue_mtx);
 
-        bool got_data = _notif_queue_cv.wait_for(
-            lk,
-            std::chrono::milliseconds(10),
-            [&]{ return !_notif_queue.empty(); }
-        );
+        if (timeout_ms < 0) {
+            throw NetconfException("timeout_ms must be >= 0");
+        }
+
+        bool got_data = false;
+
+        if (timeout_ms == 0) {
+            got_data = !_notif_queue.empty();
+        } else {
+            got_data = _notif_queue_cv.wait_for(
+                lk,
+                std::chrono::milliseconds(timeout_ms),
+                [&]{ return !_notif_queue.empty(); }
+            );
+        }
 
         if (!got_data) {
             return std::string{};
@@ -618,11 +701,95 @@ std::string NetconfClient::next_notification() {
         std::string xml = std::move(_notif_queue.front());
         _notif_queue.pop_front();
 
+        NotificationHealthEvent recovery_event;
+        bool emit_recovery_event = false;
+
+        if (_notif_queue_full_state &&
+            (_notif_queue_max_size_ < 0 ||
+            _notif_queue.size() < static_cast<std::size_t>(_notif_queue_max_size_))) {
+            _notif_queue_full_state = false;
+
+            recovery_event = make_notification_health_event_locked(
+                "notification_queue_recovered",
+                "Notification queue has free capacity again",
+                -1,
+                0,
+                0
+            );
+            emit_recovery_event = true;
+        }
+
+        lk.unlock();
+
+        if (emit_recovery_event) {
+            NotificationEventBus::instance().emit(std::move(recovery_event));
+        }
+
         return xml;
 
     } catch (const std::exception& e) {
         throw NetconfException("Unable to read from queue: " + std::string(e.what()));
     }
+}
+
+std::vector<std::string> NetconfClient::peek_notifications(int max_items) {
+    if (max_items < -1) {
+        throw NetconfException("max_items must be -1 for all items or >= 0");
+    }
+
+    std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+
+    std::size_t limit = _notif_queue.size();
+
+    if (max_items >= 0 &&
+        static_cast<std::size_t>(max_items) < limit) {
+        limit = static_cast<std::size_t>(max_items);
+    }
+
+    std::vector<std::string> snapshot;
+    snapshot.reserve(limit);
+
+    auto it = _notif_queue.begin();
+
+    for (std::size_t i = 0; i < limit && it != _notif_queue.end(); ++i, ++it) {
+        snapshot.push_back(*it);
+    }
+
+    return snapshot;
+}
+
+std::size_t NetconfClient::notification_queue_size() {
+    std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+    return _notif_queue.size();
+}
+
+NotificationHealthEvent NetconfClient::make_notification_health_event_locked(
+    const std::string& type,
+    const std::string& message,
+    int fd,
+    std::int64_t dropped_delta,
+    std::int64_t partial_bytes
+) const {
+    NotificationHealthEvent event;
+    event.valid = true;
+    event.type = type;
+    event.hostname = hostname_;
+    event.port = port_;
+    event.fd = fd;
+    event.message = message;
+
+    event.queue_size = static_cast<std::int64_t>(_notif_queue.size());
+    event.queue_max_size = static_cast<std::int64_t>(_notif_queue_max_size_);
+    event.queue_high_watermark = static_cast<std::int64_t>(_notif_queue_high_watermark);
+    event.notifications_enqueued = static_cast<std::int64_t>(_notif_enqueued_count);
+    event.notifications_dropped_queue_full =
+        static_cast<std::int64_t>(_notif_dropped_queue_full_count);
+    event.notifications_dropped_delta = dropped_delta;
+    event.incomplete_notifications_received =
+        static_cast<std::int64_t>(_notif_incomplete_count);
+    event.partial_bytes = partial_bytes;
+
+    return event;
 }
 
 bool NetconfClient::is_subscription_active() const {
@@ -790,9 +957,11 @@ std::string NetconfClient::subscribe_non_blocking(
             notif_socket_.get(),
             shared_from_this()
         );
-
-        notif_is_connected_ = true;
-        notif_is_blocking_ = false;
+        {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+            notif_is_connected_ = true;
+            notif_is_blocking_ = false;
+        }
 
         return reply;
 

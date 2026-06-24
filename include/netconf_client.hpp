@@ -3,10 +3,14 @@
 #ifndef NETCONF_CLIENT_HPP
 #define NETCONF_CLIENT_HPP
 #include "notification_reactor.hpp"
+#include "notification_event_bus.hpp"
 #include <mutex>
 #include <condition_variable>
 #include <deque>
 #include <string>
+#include <vector>
+#include <cstddef>
+#include <cstdint>
 #include <future>
 #include <stdexcept>
 #include <memory>
@@ -164,7 +168,10 @@ public:
         const std::string& username, const std::string& password,
         const std::string& key_path = "", int connect_timeout = 60,
         int read_timeout = 60, int notif_queue_size = -1,
-        int socket_connect_timeout = 5
+        int socket_connect_timeout = 5,
+        int notif_incomplete_max_kb = 1024,
+        int notif_incomplete_timeout = 5,
+        int notif_drop_event_threshold = 1
     );
     ~NetconfClient();
 
@@ -214,7 +221,9 @@ public:
     std::string locked_edit_config_non_blocking(const std::string& target,
                                    const std::string& config,
                                    bool do_validate=false);
-    std::string next_notification();
+    std::string next_notification(int timeout_ms = 10);
+    std::vector<std::string> peek_notifications(int max_items = 100);
+    std::size_t notification_queue_size();
     void on_notification_ready(int fd);
     void mark_notification_dead() noexcept;
 
@@ -265,13 +274,14 @@ public:
     std::future<std::string> locked_edit_config_async(const std::string& target,
                                                       const std::string& config,
                                                       bool do_validate=false);
+    std::future<std::string> next_notification_async(int timeout_ms = 10);
     
     // Disconnect method (common to all modes)
     bool is_subscription_active() const;
     void disconnect();
     void delete_notification_session();
     void clear_notification_queue();
-    void delete_subsription();
+    void delete_subscription();
 
 private:
     static std::string read_until_eom_blocking(
@@ -283,7 +293,9 @@ private:
         LIBSSH2_CHANNEL *chan,
         LIBSSH2_SESSION *sess,
         int soc_fd,
-        int read_timeout
+        int read_timeout,
+        int notif_incomplete_max_kb = -1,
+        int notif_incomplete_timeout = -1
     );
     static std::string build_client_hello();
     static void send_client_hello_blocking(
@@ -311,8 +323,16 @@ private:
     static void check_for_rpc_error(const std::string &xml_reply);
     static std::string resolve_hostname_blocking(const std::string &hostname);
     static std::string resolve_hostname_non_blocking(const std::string &hostname, int timeout_seconds);
+    NotificationHealthEvent make_notification_health_event_locked(
+        const std::string& type,
+        const std::string& message,
+        int fd,
+        std::int64_t dropped_delta = 0,
+        std::int64_t partial_bytes = 0
+    ) const;
 
     private:
+
     std::string hostname_;
     int port_;
     std::string username_;
@@ -322,6 +342,9 @@ private:
     int read_timeout_;
     int _notif_queue_max_size_;
     int socket_connect_timeout_;
+    int notif_incomplete_max_kb_;
+    int notif_incomplete_timeout_;
+    int notif_drop_event_threshold_;
     std::string resolved_host_;
 
     std::mutex session_mutex_;
@@ -342,6 +365,14 @@ private:
     std::mutex _notif_queue_mtx;
     std::condition_variable  _notif_queue_cv;
     std::deque<std::string>  _notif_queue;
+
+    // Protected by _notif_queue_mtx. Used for health events and debugging.
+    std::uint64_t _notif_enqueued_count = 0;
+    std::uint64_t _notif_dropped_queue_full_count = 0;
+    std::uint64_t _notif_last_drop_event_count = 0;
+    std::uint64_t _notif_incomplete_count = 0;
+    std::size_t _notif_queue_high_watermark = 0;
+    bool _notif_queue_full_state = false;
 
     // RAII-managed resources:
     SessionPtr session_;      // libssh2 session.

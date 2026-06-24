@@ -22,18 +22,42 @@ Key Features
     - A global thread pool manages NETCONF worker tasks across clients/devices.
     - Starting with v2.0.4, async completion uses one shared dispatcher instead
       of creating one detached watcher thread per async operation.
-4. **Connection and Read Timeout Controls**
+4. **Notification Queue and Health Events**
+    - Subscribe to NETCONF notifications, consume them synchronously with
+      ``next_notification()`` or asynchronously with ``next_notification_async()``.
+    - Monitor queue pressure, drops, recovery, and incomplete notification reads
+      using the process-wide notification health event stream added in v2.0.5.
+5. **Connection, Read, and Notification Safety Controls**
     - Configure total connect timeout, read timeout, notification queue size,
-      and socket-level connect timeout from the ``NetconfClient`` constructor.
-5. **Error Handling with Custom Exceptions**  
+      socket-level connect timeout, incomplete-notification guards, and drop-event
+      reporting thresholds from the ``NetconfClient`` constructor.
+6. **Error Handling with Custom Exceptions**  
     - pyNetX defines Python exceptions for common NETCONF errors, such as 
       authentication failure, connection refusal, or channel problems.
     - Starting with v2.0.4, async methods preserve these custom exception types
       instead of converting failures to ``ValueError``.
-6. **C++ Speed Underneath**  
+7. **C++ Speed Underneath**  
     - Uses C++ (via pybind11) for heavy lifting (SSH communication, XML parsing, etc.), 
     while exposing a Pythonic interface.
 
+
+What Changed in v2.0.5
+----------------------
+- Added a process-wide notification health event stream with
+  ``NotificationHealthEvent``, ``next_notification_event()``,
+  ``next_notification_event_async()``, ``pending_notification_event_count()``,
+  and ``clear_notification_events()``.
+- Added ``next_notification_async(timeout_ms=10)`` for awaitable notification
+  queue reads.
+- ``next_notification(timeout_ms=10)`` now releases the Python GIL while waiting
+  on the internal notification queue.
+- Added ``notif_incomplete_max_kb`` and ``notif_incomplete_timeout`` to prevent
+  the notification reactor from getting stuck if a bad device sends only a
+  partial notification without the NETCONF ``]]>]]>`` end marker.
+- Added ``peek_notifications(max_items=100)`` and ``notification_queue_size()``
+  for queue inspection.
+- Added ``notif_drop_event_threshold`` to control how often queue-full health
+  events are emitted while a bounded queue remains full.
 
 What Changed in v2.0.4
 ----------------------
@@ -80,7 +104,7 @@ Getting Started
 
    .. code-block:: bash
 
-      pip install pyNetX==2.0.4
+      pip install pyNetX==2.0.5
 
    Or from source:
 

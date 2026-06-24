@@ -33,7 +33,7 @@ void NetconfClient::disconnect_sync() {
     fut.get();
 }
 
-void NetconfClient::delete_subsription() {
+void NetconfClient::delete_subscription() {
     auto self = shared_from_this();
     auto fut = get_pool().enqueue([self]() -> void {
             if (!self->notif_is_connected_) {
