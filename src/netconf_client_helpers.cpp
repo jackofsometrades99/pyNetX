@@ -216,9 +216,10 @@ namespace {
             }
 
             if (poll_ret == 0) {
-                if (infinite_wait) {
-                    continue;
-                }
+                // if (infinite_wait) {
+                //     continue;
+                // }
+                // I AM NOT CONTINUING HERE ANYMORE, I AM RETURNING.
                 return;
             }
 
@@ -243,15 +244,35 @@ std::string NetconfClient::read_until_eom_non_blocking(
     LIBSSH2_CHANNEL *chan,
     LIBSSH2_SESSION *sess,
     int soc_fd,
-    int read_timeout
+    int read_timeout,
+    int notif_incomplete_max_kb,
+    int notif_incomplete_timeout
 ) {
     std::string response;
-    std::string tail;
     char buffer[1024];
 
     const bool infinite_wait = (read_timeout < 0);
     const auto timeout = std::chrono::seconds(infinite_wait ? 0 : read_timeout);
+
+    const bool incomplete_size_limit_enabled =
+        infinite_wait && notif_incomplete_max_kb > 0;
+
+    const bool incomplete_time_limit_enabled =
+        infinite_wait && notif_incomplete_timeout > 0;
+
+    const bool incomplete_guard_enabled =
+        incomplete_size_limit_enabled || incomplete_time_limit_enabled;
+
+    const size_t incomplete_max_bytes =
+        incomplete_size_limit_enabled
+            ? static_cast<size_t>(notif_incomplete_max_kb) * 1024
+            : 0;
+
     auto last_data_time = std::chrono::steady_clock::now();
+    auto first_data_time = last_data_time;
+
+    bool got_any_data = false;
+    bool returning_incomplete = false;
 
     try {
         while (true) {
@@ -259,8 +280,25 @@ std::string NetconfClient::read_until_eom_non_blocking(
                 throw NetconfException("Operation cancelled: connection object is missing");
             }
 
+            auto now = std::chrono::steady_clock::now();
+
+            if (incomplete_guard_enabled && got_any_data) {
+                if (incomplete_time_limit_enabled &&
+                    now - first_data_time >= std::chrono::seconds(notif_incomplete_timeout)) {
+                    returning_incomplete = true;
+                    break;
+                }
+
+                if (incomplete_size_limit_enabled &&
+                    response.size() >= incomplete_max_bytes) {
+                    returning_incomplete = true;
+                    break;
+                }
+            }
+
             auto deadline = last_data_time + timeout;
-            if (!infinite_wait && std::chrono::steady_clock::now() >= deadline) {
+
+            if (!infinite_wait && now >= deadline) {
                 throw NetconfException(
                     "Device failed to send data within " +
                     std::to_string(read_timeout) +
@@ -276,6 +314,10 @@ std::string NetconfClient::read_until_eom_non_blocking(
             );
 
             if (nbytes == LIBSSH2_ERROR_EAGAIN) {
+                if (infinite_wait && !got_any_data) {
+                    return response;
+                }
+
                 wait_for_libssh2_socket(
                     sess,
                     soc_fd,
@@ -296,6 +338,10 @@ std::string NetconfClient::read_until_eom_non_blocking(
             }
 
             if (nbytes == 0) {
+                if (infinite_wait && !got_any_data) {
+                    return response;
+                }
+
                 wait_for_libssh2_socket(
                     sess,
                     soc_fd,
@@ -306,21 +352,34 @@ std::string NetconfClient::read_until_eom_non_blocking(
                 continue;
             }
 
-            response.append(buffer, nbytes);
-            std::string new_data(buffer, nbytes);
-
-            if (response.size() >= 7) {
-                tail = response.substr(response.size() - 7, 7);
-            } else {
-                tail = response;
+            if (!got_any_data) {
+                got_any_data = true;
+                first_data_time = std::chrono::steady_clock::now();
             }
 
-            if ((tail + new_data).find(NETCONF_EOM) != std::string::npos) {
+            response.append(buffer, nbytes);
+            last_data_time = std::chrono::steady_clock::now();
+
+            if (response.find(NETCONF_EOM) != std::string::npos) {
                 break;
             }
 
-            last_data_time = std::chrono::steady_clock::now();
+            if (incomplete_size_limit_enabled &&
+                response.size() >= incomplete_max_bytes) {
+                returning_incomplete = true;
+                break;
+            }
         }
+
+        if (returning_incomplete) {
+            std::cerr
+                << "Received incomplete NETCONF notification. "
+                << "Returning partial notification after receiving "
+                << response.size()
+                << " bytes without NETCONF EOM."
+                << std::endl;
+        }
+
     } catch (const std::exception& e) {
         throw NetconfException(
             "Error occured while reading from channel: " + std::string(e.what())

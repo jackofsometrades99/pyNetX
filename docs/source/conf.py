@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath('../src'))
 project = 'pyNetX'
 copyright = '2025, Sambhu Nampoothiri G'
 author = 'Sambhu Nampoothiri G'
-release = '2.0.4'
+release = '2.0.5'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

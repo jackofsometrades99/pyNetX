@@ -43,6 +43,9 @@ an infinite loop.
                         read_timeout=30,
                         notif_queue_size=100,  # Optional: set a queue size for notifications
                         socket_connect_timeout=dev.get("socket_connect_timeout", 5),
+                        notif_incomplete_max_kb=1024,
+                        notif_incomplete_timeout=5,
+                        notif_drop_event_threshold=1,
                     )
 
                     # Connect to the NETCONF server
@@ -127,6 +130,9 @@ in parallel (subject to resource and performance constraints).
                         read_timeout=30,
                         notif_queue_size=100,  # Optional: set a queue size for notifications
                         socket_connect_timeout=dev.get("socket_connect_timeout", 5),
+                        notif_incomplete_max_kb=1024,
+                        notif_incomplete_timeout=5,
+                        notif_drop_event_threshold=1,
                     )
 
                     # Asynchronously connect
@@ -168,6 +174,32 @@ in parallel (subject to resource and performance constraints).
        asyncio.run(async_multi_device_example())
 
 
+
+Notification Health Event Monitor
+---------------------------------
+
+The notification health event stream is process-wide. It reports queue-full
+conditions, queue recovery, dropped notifications, and incomplete notification
+reads.
+
+.. code-block:: python
+
+   import asyncio
+   import pyNetX
+
+   async def notification_health_monitor():
+       while True:
+           event = await pyNetX.next_notification_event_async(timeout_ms=-1)
+           if event.valid:
+               print("Notification health event:", event.as_dict())
+
+   async def main():
+       asyncio.create_task(notification_health_monitor())
+       # Create clients, connect, subscribe, and consume notifications here.
+       await asyncio.sleep(3600)
+
+   asyncio.run(main())
+
 Notes & Customization
 ---------------------
 - **Device List**: Update the hostname, port, username, and password in
@@ -182,6 +214,8 @@ Notes & Customization
   the connect statements.  
 - **Timeouts**: Use ``connect_timeout``, ``read_timeout``, and
   ``socket_connect_timeout`` to control connection setup and read behavior.
+  Use ``notif_incomplete_max_kb`` and ``notif_incomplete_timeout`` to protect
+  the notification reactor from malformed partial notification streams.
 - **Thread Pool Size**: If you need to handle many devices concurrently
   in the async example, you might want to increase the global thread pool
   size by calling ``pyNetX.set_threadpool_size(n)`` before creating
@@ -192,6 +226,8 @@ Notes & Customization
   for true parallelism across devices.
 - **Async Exceptions**: Async methods raise the same pyNetX exception classes
   as synchronous methods in v2.0.4+.
+- **Notification Health Events**: In production, run one health-event monitor
+  task if you use bounded queues or want visibility into incomplete notifications.
 
 These examples serve as a starting point for building more robust
 network management tools using **pyNetX**.

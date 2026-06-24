@@ -1,36 +1,53 @@
 API Reference
 =============
 
-This section describes all methods provided by ``NetconfClient`` in pyNetX.
-The methods are organized into two main groups:
+This section documents the public pyNetX API exposed by the ``pyNetX`` Python
+package. The main class is ``NetconfClient``. Module-level functions configure
+shared worker/reactor behavior and expose the notification health event stream.
 
-1. **Synchronous Methods**  
-2. **Asynchronous Methods**
-3. **Common Methods**
+Use keyword arguments when constructing clients. The C++ binding exposes
+``port`` before ``username`` and ``password``, so keyword arguments avoid
+positional-order confusion.
 
-Usage Examples:
----------------
+Usage Examples
+--------------
+
+Deprecated synchronous usage:
+
+.. warning::
+
+   Deprecated since pyNetX 2.0.5. The explicit synchronous flow APIs remain
+   available for compatibility but will be removed in a future major release.
+   New code should use the async APIs.
+
 .. code-block:: python
 
    from pyNetX import NetconfClient
 
-   # Synchronous usage
    client = NetconfClient(
-      hostname="192.168.1.1",
-      port=830,
-      username="admin",
-      password="admin",
-      connect_timeout=30,
-      read_timeout=30,
-      notif_queue_size=100,  # Optional: set a queue size for notifications
-      socket_connect_timeout=5,
+       hostname="192.168.1.1",
+       port=830,
+       username="admin",
+       password="admin",
+       connect_timeout=30,
+       read_timeout=30,
+       notif_queue_size=100,
+       socket_connect_timeout=5,
+       notif_incomplete_max_kb=1024,
+       notif_incomplete_timeout=5,
+       notif_drop_event_threshold=1,
    )
+
    client.connect_sync()
-   response = client.get_config_sync()
+   response = client.get_config_sync(source="running")
    client.disconnect_sync()
 
-   # Asynchronous usage
+Asynchronous usage:
+
+.. code-block:: python
+
    import asyncio
+   from pyNetX import NetconfClient
 
    async def main():
        client = NetconfClient(
@@ -40,37 +57,124 @@ Usage Examples:
            password="admin",
            connect_timeout=30,
            read_timeout=30,
-           notif_queue_size=100,  # Optional: set a queue size for notifications
+           notif_queue_size=100,
            socket_connect_timeout=5,
+           notif_incomplete_max_kb=1024,
+           notif_incomplete_timeout=5,
+           notif_drop_event_threshold=1,
        )
+
        await client.connect_async()
-       response = await client.get_config_async()
+       response = await client.get_config_async(source="running")
        await client.disconnect_async()
 
    asyncio.run(main())
 
-Release Notes for v2.0.4
--------------------------
+Deprecation Notice: Synchronous Flow APIs
+----------------------------------------
 
-The v2.0.4 release keeps the public sync/async method names unchanged, but
-documents and improves the following runtime behavior:
+Starting with pyNetX 2.0.5, the explicit synchronous flow APIs are deprecated
+and will be removed in a future major release. pyNetX is moving toward an
+async-focused API for connection handling, RPC execution, configuration
+operations, and subscriptions.
 
-- ``socket_connect_timeout`` is part of the public ``NetconfClient`` constructor.
-- Non-blocking channel reads now wait with ``poll()`` on ``EAGAIN`` instead of
-  busy-spinning.
-- Async methods now use one shared internal completion dispatcher instead of
-  creating one detached watcher thread per async operation.
-- Async methods now preserve pyNetX custom exception types instead of converting
-  failures to ``ValueError``.
-- One ``NetconfClient`` RPC channel remains request/response serialized: pyNetX
-  sends one RPC, waits for its reply, and only then sends the next RPC on that
-  same channel.
+Deprecated methods include:
+
+- ``connect_sync``
+- ``disconnect_sync``
+- ``send_rpc_sync``
+- ``receive_notification_sync``
+- ``get_sync``
+- ``get_config_sync``
+- ``copy_config_sync``
+- ``delete_config_sync``
+- ``validate_sync``
+- ``edit_config_sync``
+- ``subscribe_sync``
+- ``lock_sync``
+- ``unlock_sync``
+- ``commit_sync``
+- ``locked_edit_config_sync``
+
+Use the corresponding async methods instead:
+
+- ``connect_async``
+- ``disconnect_async``
+- ``send_rpc_async``
+- ``get_async``
+- ``get_config_async``
+- ``copy_config_async``
+- ``delete_config_async``
+- ``validate_async``
+- ``edit_config_async``
+- ``subscribe_async``
+- ``lock_async``
+- ``unlock_async``
+- ``commit_async``
+- ``locked_edit_config_async``
+
+The following common/helper APIs are not part of this deprecation:
+
+- ``next_notification``
+- ``next_notification_async``
+- ``peek_notifications``
+- ``notification_queue_size``
+- ``is_subscription_active``
+- ``delete_subscription``
+- ``next_notification_event``
+- ``next_notification_event_async``
+- ``pending_notification_event_count``
+- ``clear_notification_events``
+- ``set_threadpool_size``
+- ``set_notification_reactor_count``
+
+Example migration:
+
+.. code-block:: python
+
+   # Deprecated
+   client.connect_sync()
+   reply = client.get_config_sync(source="running")
+   client.disconnect_sync()
+
+   # Recommended
+   await client.connect_async()
+   reply = await client.get_config_async(source="running")
+   await client.disconnect_async()
+
+Release Notes for v2.0.5
+------------------------
+
+The v2.0.5 release adds notification observability and safer notification
+reactor behavior while keeping existing NETCONF RPC APIs backward compatible.
+
+Highlights:
+
+- Added a process-wide notification health event stream.
+- Added ``NotificationHealthEvent``.
+- Added ``next_notification_event(timeout_ms=-1)``.
+- Added ``next_notification_event_async(timeout_ms=-1)``.
+- Added ``pending_notification_event_count()``.
+- Added ``clear_notification_events()``.
+- Added ``NetconfClient.next_notification_async(timeout_ms=10)``.
+- ``NetconfClient.next_notification(timeout_ms=10)`` now releases the Python GIL
+  while waiting on the internal notification queue.
+- Added incomplete-notification guards:
+  ``notif_incomplete_max_kb`` and ``notif_incomplete_timeout``.
+- Added queue inspection helpers:
+  ``peek_notifications(max_items=100)`` and ``notification_queue_size()``.
+- Added ``notif_drop_event_threshold`` to control queue-full health event
+  frequency. The default is ``1``.
+- Deprecated the explicit synchronous flow APIs. They remain available for
+  compatibility in v2.0.5, but new code should use the async APIs.
+
+The incomplete-notification guards prevent the notification reactor from being
+stuck indefinitely when a device sends partial notification data without the
+NETCONF ``]]>]]>`` end marker. When a guard fires, pyNetX returns the partial
+notification to the queue and emits an ``incomplete_notification`` health event.
 
 Constructor
 -----------
-
-Use keyword arguments for clarity, especially because the C++ binding exposes
-``port`` before ``username`` and ``password``.
 
 .. code-block:: python
 
@@ -84,6 +188,9 @@ Use keyword arguments for clarity, especially because the C++ binding exposes
        read_timeout=60,
        notif_queue_size=-1,
        socket_connect_timeout=5,
+       notif_incomplete_max_kb=1024,
+       notif_incomplete_timeout=5,
+       notif_drop_event_threshold=1,
    )
 
 **Parameters**
@@ -94,716 +201,484 @@ Use keyword arguments for clarity, especially because the C++ binding exposes
 - **password** (str): SSH password.
 - **key_path** (str): Reserved for key-based authentication. Password
   authentication is the currently implemented authentication path.
-- **connect_timeout** (int): Maximum time, in seconds, allowed for the full
+- **connect_timeout** (int): Maximum time, in seconds, allowed for full
   connection setup. Defaults to ``60``.
 - **read_timeout** (int): Maximum inactivity time, in seconds, while waiting
-  for NETCONF data. Defaults to ``60``. Use a negative value to wait
-  indefinitely.
-- **notif_queue_size** (int): Maximum queued async notifications. ``-1`` means
-  unbounded. Defaults to ``-1``.
+  for NETCONF RPC replies. Defaults to ``60``.
+- **notif_queue_size** (int): Maximum queued notifications per client.
+  ``-1`` means unbounded. A non-negative value bounds the queue. Defaults to
+  ``-1``.
 - **socket_connect_timeout** (int): Socket-level TCP connect timeout, in
   seconds. Defaults to ``5``. It must be greater than ``0`` and cannot be
   greater than ``connect_timeout``.
+- **notif_incomplete_max_kb** (int): Maximum partial notification size, in KiB,
+  before pyNetX returns the partial notification and emits a health event.
+  Defaults to ``1024``. Use ``-1`` to disable the size guard.
+- **notif_incomplete_timeout** (int): Maximum time, in seconds, to wait for a
+  NETCONF notification EOM marker after partial notification data starts
+  arriving. Defaults to ``5``. Use ``-1`` to disable the time guard.
+- **notif_drop_event_threshold** (int): Number of additional queue-full drops
+  before another queue-full health event is emitted while the queue remains
+  full. Defaults to ``1``. Must be greater than ``0``.
 
-Synchronous Methods
--------------------
+At least one incomplete-notification guard must remain enabled. Therefore,
+``notif_incomplete_max_kb`` and ``notif_incomplete_timeout`` cannot both be
+``-1``.
+
+Synchronous Methods Deprecated
+-------------------------------
+
+The methods in this section are deprecated since pyNetX 2.0.5. They remain
+available for compatibility, but they will be removed in a future major release.
+Use the corresponding async methods for new code. Common/helper APIs such as
+``next_notification()`` are not part of this deprecation.
 
 connect_sync()
 ~~~~~~~~~~~~~~
 
-**Description**  
-Establishes a synchronous NETCONF session with the remote device.
+.. warning::
 
-**Parameters**  
-- None (relies on constructor settings like ``hostname``, ``port``, etc.)
+   Deprecated since pyNetX 2.0.5. Use ``connect_async()`` instead.
 
-**Returns**  
-- Typically returns a boolean status or raises a connection-related exception.
+Establishes a synchronous NETCONF session.
 
-**Example**  
-
-.. code-block:: python
-
-   from pyNetX import NetconfClient
-
-   client = NetconfClient(
-       hostname="192.168.1.1",
-       port=830,
-       username="admin",
-       password="admin",
-   )
-   status = client.connect_sync()
-   print("Connection status:", status)
+**Returns**
+- ``bool``: ``True`` on success.
 
 
 disconnect_sync()
-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
 
-**Description**  
-Closes the NETCONF session.
+.. warning::
 
-**Parameters**  
-- None
+   Deprecated since pyNetX 2.0.5. Use ``disconnect_async()`` instead.
 
-**Returns**  
-- None
+Closes the active NETCONF session.
 
-**Example**  
-
-.. code-block:: python
-
-   client.disconnect_sync()
-   print("Disconnected.")
+**Returns**
+- ``None``.
 
 
 send_rpc_sync(rpc)
 ~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Sends a custom RPC command (XML string) to the device and returns the response.
+.. warning::
 
-**Parameters**  
-- **rpc** (str): The XML snippet representing the RPC command.
+   Deprecated since pyNetX 2.0.5. Use ``send_rpc_async(rpc)`` instead.
 
-**Returns**  
-- A string containing the device’s RPC reply.
+Sends a custom RPC XML string and returns the RPC reply.
 
-**Example**  
+**Parameters**
+- **rpc** (str): Full NETCONF ``<rpc>...</rpc>`` XML payload. Do not include
+  the NETCONF end marker; pyNetX appends it internally.
 
-.. code-block:: python
-
-   rpc_command = \"\"\"<get><filter type='subtree'><interfaces/></filter></get>\"\"\"
-   response = client.send_rpc_sync(rpc_command)
-   print("RPC Response:\n", response)
+**Returns**
+- ``str``: RPC reply XML.
 
 
 get_sync(filter="")
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Retrieves data from the device (equivalent to NETCONF ``<get>`` operation). An optional XML filter can be provided.
+.. warning::
 
-**Parameters**  
-- **filter** (str): An XML filter string. Defaults to an empty string (meaning retrieve all).
+   Deprecated since pyNetX 2.0.5. Use ``get_async(filter="")`` instead.
 
-**Returns**  
-- A string containing the XML data from the device.
+Performs a NETCONF ``<get>`` operation.
 
-**Example**  
+**Parameters**
+- **filter** (str): Optional XML filter.
 
-.. code-block:: python
-
-   response = client.get_sync(filter="<interfaces/>")
-   print("Interfaces:\n", response)
+**Returns**
+- ``str``: Reply XML.
 
 
 get_config_sync(source="running", filter="")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Retrieves the configuration from the specified datastore (e.g., ``running``, ``candidate``, or ``startup``).
+.. warning::
 
-**Parameters**  
-- **source** (str): Defaults to ``"running"``.
-- **filter** (str): Optional XML filter string.
+   Deprecated since pyNetX 2.0.5. Use ``get_config_async(source="running", filter="")`` instead.
 
-**Returns**  
-- A string containing the XML configuration.
+Retrieves configuration from a datastore.
 
-**Example**  
+**Parameters**
+- **source** (str): Datastore name. Defaults to ``"running"``.
+- **filter** (str): Optional XML filter.
 
-.. code-block:: python
-
-   config = client.get_config_sync(source="running", filter="<interfaces/>")
-   print("Running Config:\n", config)
+**Returns**
+- ``str``: Reply XML.
 
 
 copy_config_sync(target, source)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Copies the configuration from one datastore (``source``) to another (``target``).
+.. warning::
 
-**Parameters**  
-- **target** (str): Target datastore (e.g., ``"candidate"``).
-- **source** (str): Source datastore or XML config.
+   Deprecated since pyNetX 2.0.5. Use ``copy_config_async(target, source)`` instead.
 
-**Returns**  
-- None or a status string. Raises an exception on failure.
+Copies configuration from ``source`` to ``target``.
 
-**Example**  
+**Parameters**
+- **target** (str): Target datastore.
+- **source** (str): Source datastore or source config.
 
-.. code-block:: python
-
-   # Copy running config to candidate
-   client.copy_config_sync(target="candidate", source="running")
-   print("Successfully copied configuration.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 delete_config_sync(target)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Deletes the configuration from the specified datastore (``target``).
+.. warning::
 
-**Parameters**  
-- **target** (str): Datastore to delete (e.g., ``"candidate"``).
+   Deprecated since pyNetX 2.0.5. Use ``delete_config_async(target)`` instead.
 
-**Returns**  
-- None or a success message. Raises an exception on failure.
+Deletes the specified datastore.
 
-**Example**  
+**Parameters**
+- **target** (str): Datastore to delete.
 
-.. code-block:: python
-
-   client.delete_config_sync("candidate")
-   print("Candidate datastore deleted.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 validate_sync(source="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Validates the contents of the specified datastore.
+.. warning::
 
-**Parameters**  
-- **source** (str): The datastore to validate. Defaults to ``"running"``.
+   Deprecated since pyNetX 2.0.5. Use ``validate_async(source="running")`` instead.
 
-**Returns**  
-- None or a validation result. Raises an exception on failure.
+Validates the specified datastore.
 
-**Example**  
+**Parameters**
+- **source** (str): Datastore to validate. Defaults to ``"running"``.
 
-.. code-block:: python
-
-   client.validate_sync(source="candidate")
-   print("Candidate datastore validated.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 edit_config_sync(target, config, do_validate=False)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Edits the specified datastore with the provided config string. Optionally validates after editing.
+.. warning::
 
-**Parameters**  
-- **target** (str): Datastore to edit (e.g., ``"running"``, ``"candidate"``).
-- **config** (str): The XML configuration snippet to apply.
-- **do_validate** (bool): Whether to automatically validate after editing. Defaults to ``False``.
+   Deprecated since pyNetX 2.0.5. Use ``edit_config_async(target, config, do_validate=False)`` instead.
 
-**Returns**  
-- None or a response message. Raises an exception on failure.
+Edits the specified datastore.
 
-**Example**  
+**Parameters**
+- **target** (str): Target datastore.
+- **config** (str): XML configuration snippet.
+- **do_validate** (bool): Validate after edit. Defaults to ``False``.
 
-.. code-block:: python
-
-   new_config = \"\"\"<config> ... </config>\"\"\"
-   client.edit_config_sync("candidate", new_config, do_validate=True)
-   print("Configuration applied and validated.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 subscribe_sync(stream="NETCONF", filter="")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Subscribes to NETCONF notifications on the given stream.
+.. warning::
 
-**Parameters**  
-- **stream** (str): Defaults to ``"NETCONF"``.
-- **filter** (str): Optional XML filter to scope the notifications.
+   Deprecated since pyNetX 2.0.5. Use ``subscribe_async(stream="NETCONF", filter="")`` instead.
 
-**Returns**  
-- None or a subscription ID. Raises an exception on failure.
+Creates a NETCONF notification subscription.
 
-**Example**  
+**Parameters**
+- **stream** (str): Notification stream. Defaults to ``"NETCONF"``.
+- **filter** (str): Optional subtree XML filter.
 
-.. code-block:: python
-
-   client.subscribe_sync(stream="NETCONF")
-   print("Subscribed to NETCONF notifications.")
+**Returns**
+- ``str``: Subscription RPC reply XML.
 
 
 receive_notification_sync()
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Receives a single notification from the device. Blocks until a notification is received or a timeout occurs.
+.. warning::
 
-**Parameters**  
-- None
+   Deprecated since pyNetX 2.0.5. Use ``next_notification_async()`` for
+   awaitable notification consumption, or ``next_notification()`` for the
+   common helper API that releases the GIL while waiting.
 
-**Returns**  
-- A string containing the notification XML or None on timeout.
+Receives a notification using the legacy synchronous notification receive path.
+For new code using the reactor-backed notification queue, prefer
+``next_notification()`` or ``next_notification_async()`` after subscribing.
 
-**Example**  
-
-.. code-block:: python
-
-   notification = client.receive_notification_sync()
-   print("Received notification:\n", notification)
+**Returns**
+- ``str``: Notification XML.
 
 
 lock_sync(target="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Locks the specified datastore.
+.. warning::
 
-**Parameters**  
-- **target** (str): Defaults to ``"running"``.
+   Deprecated since pyNetX 2.0.5. Use ``lock_async(target="running")`` instead.
 
-**Returns**  
-- None or a status message.
+Locks a datastore.
 
-**Example**  
+**Parameters**
+- **target** (str): Datastore to lock. Defaults to ``"running"``.
 
-.. code-block:: python
-
-   client.lock_sync("candidate")
-   print("Candidate datastore locked.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 unlock_sync(target="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Unlocks the specified datastore.
+.. warning::
 
-**Parameters**  
-- **target** (str): Defaults to ``"running"``.
+   Deprecated since pyNetX 2.0.5. Use ``unlock_async(target="running")`` instead.
 
-**Returns**  
-- None or a status message.
+Unlocks a datastore.
 
-**Example**  
+**Parameters**
+- **target** (str): Datastore to unlock. Defaults to ``"running"``.
 
-.. code-block:: python
-
-   client.unlock_sync("candidate")
-   print("Candidate datastore unlocked.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 commit_sync()
 ~~~~~~~~~~~~~
 
-**Description**  
-Commits any configuration changes from the candidate datastore to the running datastore (if your device supports two-phase commit or similar).
+.. warning::
 
-**Parameters**  
-- None
+   Deprecated since pyNetX 2.0.5. Use ``commit_async()`` instead.
 
-**Returns**  
-- None or a commit result. Raises an exception on failure.
+Commits pending candidate datastore changes where supported by the device.
 
-**Example**  
-
-.. code-block:: python
-
-   client.commit_sync()
-   print("Committed changes to the running datastore.")
+**Returns**
+- ``str``: RPC reply XML.
 
 
 locked_edit_config_sync(target, config, do_validate=False)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Acquires a lock on the specified datastore, edits the configuration, and unlocks automatically. Optionally validates the new config.
+.. warning::
 
-**Parameters**  
-- **target** (str): Datastore (e.g., ``"running"``, ``"candidate"``).
-- **config** (str): XML config snippet to apply.
-- **do_validate** (bool): Validate after editing. Defaults to ``False``.
+   Deprecated since pyNetX 2.0.5. Use ``locked_edit_config_async(target, config, do_validate=False)`` instead.
 
-**Returns**  
-- None or a status message.
+Locks the target datastore, edits configuration, optionally validates, and then
+unlocks.
 
-**Example**  
+**Parameters**
+- **target** (str): Target datastore.
+- **config** (str): XML configuration snippet.
+- **do_validate** (bool): Validate after edit. Defaults to ``False``.
 
-.. code-block:: python
-
-   config_snippet = \"\"\"<config> ... </config>\"\"\"
-   client.locked_edit_config_sync("candidate", config_snippet)
-   print("Successfully edited configuration with lock.")
-
+**Returns**
+- ``str``: RPC reply XML.
 
 Asynchronous Methods
 --------------------
-Below are the asynchronous counterparts, returning awaitable tasks that integrate
-with Python’s ``asyncio``.
 
-Starting with v2.0.4, pyNetX uses one shared internal async completion
-dispatcher. NETCONF work still runs in the shared worker thread pool, but the
-Python ``asyncio.Future`` completion step is handled by a shared dispatcher
-instead of one detached watcher thread per async call. This is an internal
-behavior change and does not change how async methods are called.
+Async methods return awaitable Python ``asyncio.Future`` objects. NETCONF work
+runs in the shared C++ worker thread pool. Python future completion is handled
+by the shared async dispatcher thread.
+
+Operations on the same ``NetconfClient`` RPC channel remain serialized to
+protect NETCONF request/reply ordering. Use separate client instances for true
+parallelism across sessions or devices.
 
 Async methods raise the same public pyNetX exception classes as synchronous
-methods: ``NetconfConnectionRefusedError``, ``NetconfAuthError``,
-``NetconfChannelError``, and ``NetconfException``.
+methods.
 
 connect_async()
 ~~~~~~~~~~~~~~~
 
-**Description**  
 Asynchronously establishes a NETCONF session.
-
-**Parameters**  
-- None
-
-**Returns**  
-- An awaitable. Raises an exception on failure.
-
-**Example**  
 
 .. code-block:: python
 
-   import asyncio
-   from pyNetX import NetconfClient
-
-   async def main():
-       client = NetconfClient(
-           hostname="192.168.1.1",
-           port=830,
-           username="admin",
-           password="admin",
-       )
-       await client.connect_async()
-       print("Async connection established.")
-       await client.disconnect_async()
-
-   asyncio.run(main())
+   await client.connect_async()
 
 
 disconnect_async()
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously disconnects the NETCONF session.
-
-**Parameters**  
-- None
-
-**Returns**  
-- An awaitable that completes once the session closes.
-
-**Example**  
+Asynchronously closes the NETCONF session.
 
 .. code-block:: python
 
    await client.disconnect_async()
-   print("Disconnected async.")
 
 
-send_rpc_async(rpc="")
-~~~~~~~~~~~~~~~~~~~~~
+send_rpc_async(rpc)
+~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Sends a custom RPC asynchronously and awaits the response.
-
-**Parameters**  
-- **rpc** (str): The XML snippet for the RPC.
-
-**Returns**  
-- The RPC reply as a string.
-
-**Example**  
+Asynchronously sends a custom RPC XML string.
 
 .. code-block:: python
 
-   rpc_command = '<rpc message-id="102" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">' + rpc + '</rpc>'
-   reply = await client.send_rpc_async(rpc_command)
-   print("Async RPC reply:", reply)
+   reply = await client.send_rpc_async(rpc_xml)
 
 
-next_notification()
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+next_notification(timeout_ms=10)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**
-Polls the internal NETCONF notification queue and
-returns the next queued notification, if one is available.
-This method is intentionally lightweight and non-awaitable.
-It can be called from synchronous code or from inside an async function,
-but it should be called directly, not with ``await``.
+Synchronously polls or waits on the internal notification queue and returns the
+next queued notification. This method is not awaitable.
+
+Starting with v2.0.5, the pybind binding releases the Python GIL while this
+method waits on the queue.
 
 **Parameters**
-- None
+- **timeout_ms** (int): Maximum time to wait in milliseconds. Defaults to
+  ``10``. Use ``0`` for immediate polling. Values below ``0`` are invalid.
 
 **Returns**
-- ``str``: The next notification XML string.
-- ``""``: No notification was available during the short polling window.
-
-**Example**  
+- ``str``: Next notification XML.
+- ``""``: No notification was available before timeout.
 
 .. code-block:: python
 
-   notification = client.next_notification()
+   notification = client.next_notification(timeout_ms=100)
    if notification:
-       print("Notification received:", notification)
+       print(notification)
+
+
+next_notification_async(timeout_ms=10)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Awaitable version of ``next_notification()``. Internally, it waits on the
+notification queue in the shared C++ worker pool and completes a Python
+``asyncio.Future`` when a notification is available or the timeout expires.
+
+**Parameters**
+- **timeout_ms** (int): Maximum time to wait in milliseconds. Defaults to
+  ``10``. Use ``0`` for immediate polling.
+
+**Returns**
+- ``str``: Next notification XML.
+- ``""``: No notification was available before timeout.
+
+.. code-block:: python
+
+   notification = await client.next_notification_async(timeout_ms=1000)
+   if notification:
+       print(notification)
+
+
+peek_notifications(max_items=100)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Returns a snapshot of queued notifications without removing them.
+
+**Parameters**
+- **max_items** (int): Maximum number of notifications to return. Defaults to
+  ``100``. Use ``-1`` to return all queued notifications.
+
+**Returns**
+- ``list[str]``: Queued notification XML strings.
+
+
+notification_queue_size()
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Returns the current number of queued notifications for this client.
+
+**Returns**
+- ``int``: Queue size.
 
 
 is_subscription_active()
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**
 Returns whether the client currently has an active notification subscription.
 
-**Parameters**
-- None
-
 **Returns**
-- ``bool``: ``True`` when a notification subscription is active, otherwise
-  ``False``.
-
-**Example**
-
-.. code-block:: python
-
-   if client.is_subscription_active():
-       print("Notification subscription is active")
+- ``bool``.
 
 
 get_async(filter="")
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Performs an asynchronous ``<get>`` operation.
-
-**Parameters**  
-- **filter** (str): XML filter snippet.
-
-**Returns**  
-- A string containing the requested data.
-
-**Example**  
+Asynchronous version of ``get_sync()``.
 
 .. code-block:: python
 
-   data = await client.get_async("<interfaces/>")
-   print("Async data:\n", data)
+   reply = await client.get_async(filter="<interfaces/>")
 
 
 get_config_async(source="running", filter="")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously retrieves the specified datastore configuration.
-
-**Parameters**  
-- **source** (str): e.g., ``"running"`` or ``"candidate"``. Defaults to ``"running"``.
-- **filter** (str): Optional filter.
-
-**Returns**  
-- The config data as a string.
-
-**Example**  
+Asynchronous version of ``get_config_sync()``.
 
 .. code-block:: python
 
-   running_config = await client.get_config_async(source="running")
-   print("Async running config:\n", running_config)
+   reply = await client.get_config_async(source="running")
 
 
 copy_config_async(target, source)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously copies the configuration from ``source`` to ``target``.
-
-**Parameters**  
-- **target** (str)
-- **source** (str)
-
-**Returns**  
-- None or a status message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.copy_config_async(target="candidate", source="running")
+Asynchronous version of ``copy_config_sync()``.
 
 
 delete_config_async(target)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously deletes the specified datastore.
-
-**Parameters**  
-- **target** (str): e.g., ``"candidate"``.
-
-**Returns**  
-- None or a success/failure message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.delete_config_async("candidate")
+Asynchronous version of ``delete_config_sync()``.
 
 
 validate_async(source="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously validates the configuration in the specified datastore.
-
-**Parameters**  
-- **source** (str): defaults to ``"running"``.
-
-**Returns**  
-- None or a validation message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.validate_async("candidate")
+Asynchronous version of ``validate_sync()``.
 
 
 edit_config_async(target, config, do_validate=False)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously edits a datastore with the provided configuration. Optionally validates.
-
-**Parameters**  
-- **target** (str): e.g., ``"running"`` or ``"candidate"``.
-- **config** (str): The XML config snippet.
-- **do_validate** (bool): Whether to validate after editing.
-
-**Returns**  
-- None or a status message.
-
-**Example**  
-
-.. code-block:: python
-
-   config_snippet = \"\"\"<config> ... </config>\"\"\"
-   await client.edit_config_async("candidate", config_snippet, do_validate=True)
+Asynchronous version of ``edit_config_sync()``.
 
 
 subscribe_async(stream="NETCONF", filter="")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously subscribes to notifications from a given stream.
-
-**Parameters**  
-- **stream** (str): Defaults to ``"NETCONF"``.
-- **filter** (str): Optional XML filter.
-
-**Returns**  
-- None or a subscription identifier.
-
-**Example**  
+Asynchronously creates a NETCONF notification subscription.
 
 .. code-block:: python
 
-   await client.subscribe_async("NETCONF")
-   print("Subscribed to NETCONF notifications asynchronously.")
+   reply = await client.subscribe_async(stream="NETCONF", filter="")
 
 
 lock_async(target="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously locks the specified datastore.
-
-**Parameters**  
-- **target** (str): Defaults to ``"running"``.
-
-**Returns**  
-- None or a status message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.lock_async("candidate")
-   print("Locked candidate datastore asynchronously.")
+Asynchronous version of ``lock_sync()``.
 
 
 unlock_async(target="running")
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously unlocks the specified datastore.
-
-**Parameters**  
-- **target** (str): Defaults to ``"running"``.
-
-**Returns**  
-- None or a status message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.unlock_async("candidate")
-   print("Unlocked candidate datastore asynchronously.")
+Asynchronous version of ``unlock_sync()``.
 
 
 commit_async()
 ~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously commits changes from the candidate datastore to the running datastore.
-
-**Parameters**  
-- None
-
-**Returns**  
-- None or a commit message.
-
-**Example**  
-
-.. code-block:: python
-
-   await client.commit_async()
-   print("Asynchronous commit completed.")
+Asynchronous version of ``commit_sync()``.
 
 
 locked_edit_config_async(target, config, do_validate=False)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Asynchronously locks the specified datastore, applies an edit-config, 
-optionally validates, then unlocks.
+Asynchronous version of ``locked_edit_config_sync()``.
 
-**Parameters**  
-- **target** (str)
-- **config** (str)
-- **do_validate** (bool): whether to validate after editing.
+Common Methods and Module-Level Functions
+-----------------------------------------
 
-**Returns**  
-- None or a status message.
-
-**Example**  
-
-.. code-block:: python
-
-   config_snippet = \"\"\"<config> ... </config>\"\"\"
-   await client.locked_edit_config_async("candidate", config_snippet, do_validate=True)
-
-Common Methods
---------------------
-Below are the some common methods that can be used in both sync and async structures.
 
 delete_subscription()
 ~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Deletes an established NETCONF notifications subscription for a client.
-
-**Parameters**  
-- None
-
-**Returns**  
-- None.
-
-**Example**  
+Deletes the client's notification subscription and notification session.
 
 .. code-block:: python
 
@@ -813,24 +688,10 @@ Deletes an established NETCONF notifications subscription for a client.
 set_threadpool_size(nThreads)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**  
-Sets the number of worker threads in the shared NETCONF task pool. This controls
-how many NETCONF worker operations can run concurrently across clients/devices.
+Configures the size of the shared C++ worker thread pool used by async NETCONF
+operations and async queue waits.
 
-Starting with v2.0.4, async completion is handled by a shared dispatcher thread,
-so pyNetX no longer creates one detached watcher thread per async operation.
-
-Operations on the same ``NetconfClient`` RPC channel are still serialized. If
-multiple async RPCs are submitted on the same client, pyNetX sends one request,
-waits for its reply, and then sends the next request on that channel.
-
-**Parameters**  
-- **nThreads** (int): Number of worker threads in the shared task pool.
-
-**Returns**  
-- None.
-
-**Example**  
+Set this during process startup, before starting active operations.
 
 .. code-block:: python
 
@@ -841,41 +702,138 @@ waits for its reply, and then sends the next request on that channel.
 set_notification_reactor_count(nThreads)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Description**
-Configures how many background epoll reactor threads pyNetX uses
-to monitor notification sockets.
+Configures how many background epoll reactor threads pyNetX uses to monitor
+notification sockets.
 
-If this function is not called, pyNetX automatically creates one
-notification reactor when the first subscription is registered.
-For large deployments, configure this once during startup before
-creating many subscriptions.
-
-**Parameters**
-- **nThreads** (int): Number of notification reactor threads to use.
-
-**Returns**
-- None.
-
-**Example**
+If this function is not called, pyNetX automatically creates one notification
+reactor when the first subscription is registered. For large deployments,
+configure this once during startup before creating subscriptions.
 
 .. code-block:: python
 
    import pyNetX
-   pyNetX.set_notification_reactor_count(8) # Use 8 background threads to monitor notification sockets.
+   pyNetX.set_notification_reactor_count(8)
 
+Notification Health Event Stream
+--------------------------------
+
+pyNetX 2.0.5 adds a process-wide notification health event stream. It is useful
+for observing bounded queue pressure, notification drops, queue recovery, and
+incomplete notification reads.
+
+Events are represented by ``NotificationHealthEvent``.
+
+NotificationHealthEvent
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Fields:
+
+- ``valid``
+- ``type``
+- ``hostname``
+- ``port``
+- ``fd``
+- ``message``
+- ``queue_size``
+- ``queue_max_size``
+- ``queue_high_watermark``
+- ``notifications_enqueued``
+- ``notifications_dropped_queue_full``
+- ``notifications_dropped_delta``
+- ``incomplete_notifications_received``
+- ``partial_bytes``
+- ``health_events_dropped``
+
+Use ``event.as_dict()`` to convert an event to a Python dictionary.
+
+Common event types:
+
+- ``notification_queue_full``: A bounded notification queue first became full.
+- ``notification_drops_summary``: Additional drops occurred while the queue
+  remained full. Frequency is controlled by ``notif_drop_event_threshold``.
+- ``notification_queue_recovered``: A previously full queue has free capacity.
+- ``incomplete_notification``: Partial notification data was received without
+  the NETCONF EOM marker, and an incomplete-notification guard returned it.
+- ``timeout``: No event was available before timeout. ``valid`` is ``False``.
+
+next_notification_event(timeout_ms=-1)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Returns the next notification health event.
+
+**Parameters**
+- **timeout_ms** (int): ``-1`` waits indefinitely, ``0`` polls immediately,
+  and positive values wait up to that many milliseconds.
+
+**Returns**
+- ``NotificationHealthEvent``. If no event is available before timeout,
+  ``event.valid`` is ``False`` and ``event.type`` is ``"timeout"``.
+
+.. code-block:: python
+
+   event = pyNetX.next_notification_event(timeout_ms=0)
+   if event.valid:
+       print(event.as_dict())
+
+
+next_notification_event_async(timeout_ms=-1)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Awaitable version of ``next_notification_event()``.
+
+.. code-block:: python
+
+   event = await pyNetX.next_notification_event_async(timeout_ms=1000)
+   if event.valid:
+       print(event.as_dict())
+
+
+pending_notification_event_count()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Returns the number of queued notification health events.
+
+.. code-block:: python
+
+   count = pyNetX.pending_notification_event_count()
+
+
+clear_notification_events()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Clears queued notification health events and resets the dropped-health-event
+counter.
+
+.. code-block:: python
+
+   pyNetX.clear_notification_events()
+
+Event monitor example
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   import asyncio
+   import pyNetX
+
+   async def monitor_notification_health():
+       while True:
+           event = await pyNetX.next_notification_event_async(timeout_ms=-1)
+           if event.valid:
+               print(event.as_dict())
+
+   asyncio.create_task(monitor_notification_health())
 
 Common Exceptions
 -----------------
-All synchronous and asynchronous methods may raise one of the following custom
-exceptions upon failure:
 
-- **NetconfConnectionRefusedError**
-- **NetconfAuthError**
-- **NetconfChannelError**
-- **NetconfException**
+All synchronous and asynchronous methods may raise one of the following public
+exception classes:
 
-Starting with v2.0.4, async methods preserve these exception classes. Earlier
-versions could convert async failures to ``ValueError``.
+- ``NetconfConnectionRefusedError``
+- ``NetconfAuthError``
+- ``NetconfChannelError``
+- ``NetconfException``
 
-For details, see :doc:`introduction` or check out the usage examples in :doc:`examples`.
-
+Async methods preserve these exception classes. Earlier versions could convert
+async failures to ``ValueError``.

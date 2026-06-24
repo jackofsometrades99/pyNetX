@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include "netconf_client.hpp"
 #include "notification_reactor_manager.hpp"
+#include "notification_event_bus.hpp"
 #include "thread_pool.hpp"
 #include "thread_pool_global.hpp"
 #include <future>
@@ -17,6 +18,15 @@
 
 namespace py = pybind11;
 
+inline void warn_sync_api_deprecated(const char* method_name) {
+    std::string message =
+        std::string("pyNetX.") + method_name +
+        " is deprecated and will be removed in a future major release. "
+        "pyNetX is moving to an async-focused API. "
+        "Use the corresponding *_async method instead.";
+
+    PyErr_WarnEx(PyExc_DeprecationWarning, message.c_str(), 2);
+}
 
 // ---- Register custom exceptions with Python
 void register_exceptions(py::module_ &m) {
@@ -355,6 +365,61 @@ PYBIND11_MODULE(pyNetX, m) {
 
     register_exceptions(m);
 
+    py::class_<NotificationHealthEvent>(m, "NotificationHealthEvent")
+        .def_readonly("valid", &NotificationHealthEvent::valid)
+        .def_readonly("type", &NotificationHealthEvent::type)
+        .def_readonly("hostname", &NotificationHealthEvent::hostname)
+        .def_readonly("port", &NotificationHealthEvent::port)
+        .def_readonly("fd", &NotificationHealthEvent::fd)
+        .def_readonly("message", &NotificationHealthEvent::message)
+        .def_readonly("queue_size", &NotificationHealthEvent::queue_size)
+        .def_readonly("queue_max_size", &NotificationHealthEvent::queue_max_size)
+        .def_readonly("queue_high_watermark", &NotificationHealthEvent::queue_high_watermark)
+        .def_readonly("notifications_enqueued", &NotificationHealthEvent::notifications_enqueued)
+        .def_readonly("notifications_dropped_queue_full", &NotificationHealthEvent::notifications_dropped_queue_full)
+        .def_readonly("notifications_dropped_delta", &NotificationHealthEvent::notifications_dropped_delta)
+        .def_readonly("incomplete_notifications_received", &NotificationHealthEvent::incomplete_notifications_received)
+        .def_readonly("partial_bytes", &NotificationHealthEvent::partial_bytes)
+        .def_readonly("health_events_dropped", &NotificationHealthEvent::health_events_dropped)
+        .def("as_dict", [](const NotificationHealthEvent& event) {
+            py::dict doc;
+            doc["valid"] = event.valid;
+            doc["type"] = event.type;
+            doc["hostname"] = event.hostname;
+            doc["port"] = event.port;
+            doc["fd"] = event.fd;
+            doc["message"] = event.message;
+            doc["queue_size"] = event.queue_size;
+            doc["queue_max_size"] = event.queue_max_size;
+            doc["queue_high_watermark"] = event.queue_high_watermark;
+            doc["notifications_enqueued"] = event.notifications_enqueued;
+            doc["notifications_dropped_queue_full"] = event.notifications_dropped_queue_full;
+            doc["notifications_dropped_delta"] = event.notifications_dropped_delta;
+            doc["incomplete_notifications_received"] = event.incomplete_notifications_received;
+            doc["partial_bytes"] = event.partial_bytes;
+            doc["health_events_dropped"] = event.health_events_dropped;
+            return doc;
+        });
+
+    m.def("next_notification_event", [](int timeout_ms) {
+        py::gil_scoped_release release;
+        return NotificationEventBus::instance().next_event(timeout_ms);
+    }, py::arg("timeout_ms") = -1);
+
+    m.def("next_notification_event_async", [](int timeout_ms) {
+        return wrap_future(NotificationEventBus::instance().next_event_async(timeout_ms));
+    }, py::arg("timeout_ms") = -1);
+
+    m.def("pending_notification_event_count", []() {
+        py::gil_scoped_release release;
+        return NotificationEventBus::instance().pending_event_count();
+    });
+
+    m.def("clear_notification_events", []() {
+        py::gil_scoped_release release;
+        NotificationEventBus::instance().clear();
+    });
+
     // Bind NetconfClient with shared_ptr for proper lifetime management.
     py::class_<NetconfClient, std::shared_ptr<NetconfClient>>(m, "NetconfClient")
         .def(py::init([](const std::string &hostname,
@@ -365,7 +430,10 @@ PYBIND11_MODULE(pyNetX, m) {
                          int connect_timeout,
                          int read_timeout,
                          int notif_queue_size,
-                         int socket_connect_timeout) {
+                         int socket_connect_timeout,
+                         int notif_incomplete_max_kb,
+                         int notif_incomplete_timeout,
+                         int notif_drop_event_threshold) {
             return std::make_shared<NetconfClient>(
                 hostname,
                 port,
@@ -375,7 +443,10 @@ PYBIND11_MODULE(pyNetX, m) {
                 connect_timeout,
                 read_timeout,
                 notif_queue_size,
-                socket_connect_timeout
+                socket_connect_timeout,
+                notif_incomplete_max_kb,
+                notif_incomplete_timeout,
+                notif_drop_event_threshold
             );
         }),
         py::arg("hostname"),
@@ -386,31 +457,97 @@ PYBIND11_MODULE(pyNetX, m) {
         py::arg("connect_timeout") = 60,
         py::arg("read_timeout") = 60,
         py::arg("notif_queue_size") = -1,
-        py::arg("socket_connect_timeout") = 5)
+        py::arg("socket_connect_timeout") = 5,
+        py::arg("notif_incomplete_max_kb") = 1024,
+        py::arg("notif_incomplete_timeout") = 5,
+        py::arg("notif_drop_event_threshold") = 1)
         // Synchronous methods
-        .def("connect_sync", &NetconfClient::connect_sync)
-        .def("disconnect_sync", &NetconfClient::disconnect_sync)
+        // Deprecated synchronous flow methods.
+        // These remain available in 2.0.5 for compatibility, but pyNetX is
+        // moving toward an async-focused API.
+        .def("connect_sync", [](NetconfClient& self) {
+            warn_sync_api_deprecated("connect_sync");
+            return self.connect_sync();
+        })
+        .def("disconnect_sync", [](NetconfClient& self) {
+            warn_sync_api_deprecated("disconnect_sync");
+            return self.disconnect_sync();
+        })
         .def("delete_subscription", &NetconfClient::delete_notification_session)
-        .def("send_rpc_sync", &NetconfClient::send_rpc_sync, py::arg("rpc"))
-        .def("receive_notification_sync", &NetconfClient::receive_notification_sync)
-        .def("get_sync", &NetconfClient::get_sync, py::arg("filter") = "")
-        .def("get_config_sync", &NetconfClient::get_config_sync,
-             py::arg("source") = "running", py::arg("filter") = "")
-        .def("copy_config_sync", &NetconfClient::copy_config_sync,
-             py::arg("target"), py::arg("source"))
-        .def("delete_config_sync", &NetconfClient::delete_config_sync,
-             py::arg("target"))
-        .def("validate_sync", &NetconfClient::validate_sync,
-             py::arg("source") = "running")
-        .def("edit_config_sync", &NetconfClient::edit_config_sync,
-             py::arg("target"), py::arg("config"), py::arg("do_validate") = false)
-        .def("subscribe_sync", &NetconfClient::subscribe_sync,
-             py::arg("stream") = "NETCONF", py::arg("filter") = "")
-        .def("lock_sync", &NetconfClient::lock_sync, py::arg("target") = "running")
-        .def("unlock_sync", &NetconfClient::unlock_sync, py::arg("target") = "running")
-        .def("commit_sync", &NetconfClient::commit_sync)
-        .def("locked_edit_config_sync", &NetconfClient::locked_edit_config_sync,
-             py::arg("target"), py::arg("config"), py::arg("do_validate") = false)
+        .def("send_rpc_sync", [](NetconfClient& self, const std::string& rpc) {
+            warn_sync_api_deprecated("send_rpc_sync");
+            return self.send_rpc_sync(rpc);
+        }, py::arg("rpc"))
+        .def("receive_notification_sync", [](NetconfClient& self) {
+            warn_sync_api_deprecated("receive_notification_sync");
+            return self.receive_notification_sync();
+        })
+        .def("get_sync", [](NetconfClient& self, const std::string& filter) {
+            warn_sync_api_deprecated("get_sync");
+            return self.get_sync(filter);
+        }, py::arg("filter") = "")
+        .def("get_config_sync", [](
+            NetconfClient& self,
+            const std::string& source,
+            const std::string& filter
+        ) {
+            warn_sync_api_deprecated("get_config_sync");
+            return self.get_config_sync(source, filter);
+        }, py::arg("source") = "running", py::arg("filter") = "")
+        .def("copy_config_sync", [](
+            NetconfClient& self,
+            const std::string& target,
+            const std::string& source
+        ) {
+            warn_sync_api_deprecated("copy_config_sync");
+            return self.copy_config_sync(target, source);
+        }, py::arg("target"), py::arg("source"))
+        .def("delete_config_sync", [](NetconfClient& self, const std::string& target) {
+            warn_sync_api_deprecated("delete_config_sync");
+            return self.delete_config_sync(target);
+        }, py::arg("target"))
+        .def("validate_sync", [](NetconfClient& self, const std::string& source) {
+            warn_sync_api_deprecated("validate_sync");
+            return self.validate_sync(source);
+        }, py::arg("source") = "running")
+        .def("edit_config_sync", [](
+            NetconfClient& self,
+            const std::string& target,
+            const std::string& config,
+            bool do_validate
+        ) {
+            warn_sync_api_deprecated("edit_config_sync");
+            return self.edit_config_sync(target, config, do_validate);
+        }, py::arg("target"), py::arg("config"), py::arg("do_validate") = false)
+        .def("subscribe_sync", [](
+            NetconfClient& self,
+            const std::string& stream,
+            const std::string& filter
+        ) {
+            warn_sync_api_deprecated("subscribe_sync");
+            return self.subscribe_sync(stream, filter);
+        }, py::arg("stream") = "NETCONF", py::arg("filter") = "")
+        .def("lock_sync", [](NetconfClient& self, const std::string& target) {
+            warn_sync_api_deprecated("lock_sync");
+            return self.lock_sync(target);
+        }, py::arg("target") = "running")
+        .def("unlock_sync", [](NetconfClient& self, const std::string& target) {
+            warn_sync_api_deprecated("unlock_sync");
+            return self.unlock_sync(target);
+        }, py::arg("target") = "running")
+        .def("commit_sync", [](NetconfClient& self) {
+            warn_sync_api_deprecated("commit_sync");
+            return self.commit_sync();
+        })
+        .def("locked_edit_config_sync", [](
+            NetconfClient& self,
+            const std::string& target,
+            const std::string& config,
+            bool do_validate
+        ) {
+            warn_sync_api_deprecated("locked_edit_config_sync");
+            return self.locked_edit_config_sync(target, config, do_validate);
+        }, py::arg("target"), py::arg("config"), py::arg("do_validate") = false)
         // Asynchronous methods
         .def("connect_async", [](std::shared_ptr<NetconfClient> &self) {
             return wrap_future(self->connect_async());
@@ -421,7 +558,23 @@ PYBIND11_MODULE(pyNetX, m) {
         .def("send_rpc_async", [](std::shared_ptr<NetconfClient> &self, const std::string &rpc) {
             return wrap_future(self->send_rpc_async(rpc));
         }, py::arg("rpc"))
-        .def("next_notification", &NetconfClient::next_notification)
+        .def("next_notification", &NetconfClient::next_notification,
+            py::arg("timeout_ms") = 10,
+            py::call_guard<py::gil_scoped_release>())
+        .def("next_notification_async", [](
+            std::shared_ptr<NetconfClient> &self,
+            int timeout_ms
+        ) {
+            return wrap_future(self->next_notification_async(timeout_ms));
+        }, py::arg("timeout_ms") = 10)
+        .def("peek_notifications", [](NetconfClient& self, int max_items) {
+            py::gil_scoped_release release;
+            return self.peek_notifications(max_items);
+        }, py::arg("max_items") = 100)
+        .def("notification_queue_size", [](NetconfClient& self) {
+            py::gil_scoped_release release;
+            return self.notification_queue_size();
+        })
         .def("is_subscription_active", &NetconfClient::is_subscription_active)
         .def("get_async", [](std::shared_ptr<NetconfClient> &self, const std::string &filter) {
             return wrap_future(self->get_async(filter));

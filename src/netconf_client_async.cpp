@@ -208,3 +208,10 @@ std::future<std::string> NetconfClient::locked_edit_config_async(
         return self->locked_edit_config_non_blocking(target, config, do_validate);
     });
 }
+
+std::future<std::string> NetconfClient::next_notification_async(int timeout_ms) {
+    auto self = shared_from_this();
+    return get_pool().enqueue([self, timeout_ms]() -> std::string {
+        return self->next_notification(timeout_ms);
+    });
+}
