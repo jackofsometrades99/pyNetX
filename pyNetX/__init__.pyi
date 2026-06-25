@@ -17,6 +17,8 @@ class NetconfChannelError(OSError): ...
 class NotificationHealthEvent:
     valid: bool
     type: str
+    timestamp: str
+    label: str
     hostname: str
     port: int
     fd: int
@@ -47,7 +49,8 @@ class NetconfClient:
         socket_connect_timeout: int = 5,
         notif_incomplete_max_kb: int = 1024,
         notif_incomplete_timeout: int = 5,
-        notif_drop_event_threshold: int = 1
+        notif_drop_event_threshold: int = 1,
+        label: str = "None"
     ) -> None: ...
     # Synchronous methods
     # Deprecated since pyNetX 2.0.5.

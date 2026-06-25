@@ -171,7 +171,8 @@ public:
         int socket_connect_timeout = 5,
         int notif_incomplete_max_kb = 1024,
         int notif_incomplete_timeout = 5,
-        int notif_drop_event_threshold = 1
+        int notif_drop_event_threshold = 1,
+        const std::string& label = "None"
     );
     ~NetconfClient();
 
@@ -338,6 +339,7 @@ private:
     std::string username_;
     std::string password_;
     std::string key_path_;
+    std::string label_;
     int connect_timeout_;
     int read_timeout_;
     int _notif_queue_max_size_;

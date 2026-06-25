@@ -773,6 +773,8 @@ NotificationHealthEvent NetconfClient::make_notification_health_event_locked(
     NotificationHealthEvent event;
     event.valid = true;
     event.type = type;
+    event.timestamp = current_notification_event_timestamp_utc();
+    event.label = label_;
     event.hostname = hostname_;
     event.port = port_;
     event.fd = fd;

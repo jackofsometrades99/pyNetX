@@ -3,9 +3,36 @@
 #include "thread_pool.hpp"
 #include "thread_pool_global.hpp"
 #include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
+
+std::string current_notification_event_timestamp_utc() {
+    using namespace std::chrono;
+
+    const auto now = system_clock::now();
+    const auto now_time_t = system_clock::to_time_t(now);
+
+    std::tm tm_utc{};
+    gmtime_r(&now_time_t, &tm_utc);
+
+    const auto ms = duration_cast<milliseconds>(
+        now.time_since_epoch()
+    ) % 1000;
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm_utc, "%Y-%m-%dT%H:%M:%S")
+        << '.'
+        << std::setw(3)
+        << std::setfill('0')
+        << ms.count()
+        << 'Z';
+
+    return oss.str();
+}
 
 NotificationEventBus& NotificationEventBus::instance() {
     // Intentionally leaked to avoid static-destruction ordering issues while
@@ -16,6 +43,9 @@ NotificationEventBus& NotificationEventBus::instance() {
 
 void NotificationEventBus::emit(NotificationHealthEvent event) noexcept {
     try {
+        if (event.timestamp.empty()) {
+            event.timestamp = current_notification_event_timestamp_utc();
+        }
         {
             std::lock_guard<std::mutex> lk(mtx_);
 
@@ -65,6 +95,8 @@ NotificationHealthEvent NotificationEventBus::next_event(int timeout_ms) {
         NotificationHealthEvent timeout_event;
         timeout_event.valid = false;
         timeout_event.type = "timeout";
+        timeout_event.timestamp = current_notification_event_timestamp_utc();
+        timeout_event.label = "None";
         timeout_event.message = "No notification health event available before timeout";
         timeout_event.health_events_dropped = dropped_events_;
         return timeout_event;

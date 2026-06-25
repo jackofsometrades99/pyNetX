@@ -368,6 +368,8 @@ PYBIND11_MODULE(pyNetX, m) {
     py::class_<NotificationHealthEvent>(m, "NotificationHealthEvent")
         .def_readonly("valid", &NotificationHealthEvent::valid)
         .def_readonly("type", &NotificationHealthEvent::type)
+        .def_readonly("timestamp", &NotificationHealthEvent::timestamp)
+        .def_readonly("label", &NotificationHealthEvent::label)
         .def_readonly("hostname", &NotificationHealthEvent::hostname)
         .def_readonly("port", &NotificationHealthEvent::port)
         .def_readonly("fd", &NotificationHealthEvent::fd)
@@ -385,6 +387,8 @@ PYBIND11_MODULE(pyNetX, m) {
             py::dict doc;
             doc["valid"] = event.valid;
             doc["type"] = event.type;
+            doc["timestamp"] = event.timestamp;
+            doc["label"] = event.label;
             doc["hostname"] = event.hostname;
             doc["port"] = event.port;
             doc["fd"] = event.fd;
@@ -433,7 +437,8 @@ PYBIND11_MODULE(pyNetX, m) {
                          int socket_connect_timeout,
                          int notif_incomplete_max_kb,
                          int notif_incomplete_timeout,
-                         int notif_drop_event_threshold) {
+                         int notif_drop_event_threshold,
+                         const std::string& label) {
             return std::make_shared<NetconfClient>(
                 hostname,
                 port,
@@ -446,7 +451,8 @@ PYBIND11_MODULE(pyNetX, m) {
                 socket_connect_timeout,
                 notif_incomplete_max_kb,
                 notif_incomplete_timeout,
-                notif_drop_event_threshold
+                notif_drop_event_threshold,
+                label
             );
         }),
         py::arg("hostname"),
@@ -460,7 +466,8 @@ PYBIND11_MODULE(pyNetX, m) {
         py::arg("socket_connect_timeout") = 5,
         py::arg("notif_incomplete_max_kb") = 1024,
         py::arg("notif_incomplete_timeout") = 5,
-        py::arg("notif_drop_event_threshold") = 1)
+        py::arg("notif_drop_event_threshold") = 1,
+        py::arg("label") = "None")
         // Synchronous methods
         // Deprecated synchronous flow methods.
         // These remain available in 2.0.5 for compatibility, but pyNetX is

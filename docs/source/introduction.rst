@@ -1,157 +1,62 @@
 Introduction
 ============
 
-What is pyNetX?
----------------
-**pyNetX** is a Python library for managing NETCONF sessions with network devices. 
-It provides a clean, high-level API for performing operations such as connecting 
-to devices, retrieving or editing configurations, and subscribing to notifications. 
-Both **synchronous** and **asynchronous** methods are available, enabling pyNetX to 
-be used in a variety of application architectures, from simple one-off scripts to 
-large-scale event-driven frameworks.
+pyNetX is a Python NETCONF client library designed for async network automation
+and notification-heavy applications. The public API is Python, while the core
+NETCONF/SSH work is implemented in C++ and exposed through pybind11.
 
-Key Features
-------------
-1. **NETCONF Support**  
-    - Full suite of NETCONF operations, including ``get()``/``get-config()`` 
-    for retrieval, ``edit-config()`` for updates, and more.
-2. **Synchronous & Asynchronous API**  
-   - Choose either blocking (sync) or non-blocking (async) methods for each operation. 
-   - Async support integrates with Python’s built-in ``asyncio`` library.
-3. **Thread Pool and Async Completion Management**  
-    - A global thread pool manages NETCONF worker tasks across clients/devices.
-    - Starting with v2.0.4, async completion uses one shared dispatcher instead
-      of creating one detached watcher thread per async operation.
-4. **Notification Queue and Health Events**
-    - Subscribe to NETCONF notifications, consume them synchronously with
-      ``next_notification()`` or asynchronously with ``next_notification_async()``.
-    - Monitor queue pressure, drops, recovery, and incomplete notification reads
-      using the process-wide notification health event stream added in v2.0.5.
-5. **Connection, Read, and Notification Safety Controls**
-    - Configure total connect timeout, read timeout, notification queue size,
-      socket-level connect timeout, incomplete-notification guards, and drop-event
-      reporting thresholds from the ``NetconfClient`` constructor.
-6. **Error Handling with Custom Exceptions**  
-    - pyNetX defines Python exceptions for common NETCONF errors, such as 
-      authentication failure, connection refusal, or channel problems.
-    - Starting with v2.0.4, async methods preserve these custom exception types
-      instead of converting failures to ``ValueError``.
-7. **C++ Speed Underneath**  
-    - Uses C++ (via pybind11) for heavy lifting (SSH communication, XML parsing, etc.), 
-    while exposing a Pythonic interface.
+What pyNetX provides
+--------------------
 
+- Async-friendly NETCONF RPC methods such as ``connect_async()``,
+  ``get_config_async()``, ``edit_config_async()``, and ``subscribe_async()``.
+- A custom C++ worker pool used by async operations.
+- A shared async result dispatcher that resolves Python ``asyncio.Future``
+  objects from completed C++ futures.
+- A separate SSH/NETCONF notification session so long-running subscriptions do
+  not block normal RPC traffic.
+- epoll-backed notification reactor threads.
+- Per-client notification queues.
+- A process-wide notification health event stream.
+- Device labels and UTC timestamps in health events starting in v2.0.6.
 
-What Changed in v2.0.5
-----------------------
-- Added a process-wide notification health event stream with
-  ``NotificationHealthEvent``, ``next_notification_event()``,
-  ``next_notification_event_async()``, ``pending_notification_event_count()``,
-  and ``clear_notification_events()``.
-- Added ``next_notification_async(timeout_ms=10)`` for awaitable notification
-  queue reads.
-- ``next_notification(timeout_ms=10)`` now releases the Python GIL while waiting
-  on the internal notification queue.
-- Added ``notif_incomplete_max_kb`` and ``notif_incomplete_timeout`` to prevent
-  the notification reactor from getting stuck if a bad device sends only a
-  partial notification without the NETCONF ``]]>]]>`` end marker.
-- Added ``peek_notifications(max_items=100)`` and ``notification_queue_size()``
-  for queue inspection.
-- Added ``notif_drop_event_threshold`` to control how often queue-full health
-  events are emitted while a bounded queue remains full.
+Current protocol behavior
+-------------------------
 
-What Changed in v2.0.4
-----------------------
-- Added public documentation for ``socket_connect_timeout`` in the
-  ``NetconfClient`` constructor.
-- Non-blocking reads now wait on socket readiness with ``poll()`` instead of
-  repeatedly retrying on ``EAGAIN``. This reduces CPU usage when devices delay
-  replies or notifications.
-- Async wrappers now use one shared completion dispatcher instead of one
-  detached watcher thread per async operation.
-- Async exceptions now preserve pyNetX exception classes such as
-  ``NetconfAuthError`` and ``NetconfConnectionRefusedError``.
-- Normal RPC calls on the same ``NetconfClient`` channel remain serialized:
-  pyNetX sends one RPC, waits for its reply, and then sends the next RPC.
+pyNetX currently uses NETCONF 1.0 end-of-message framing with the ``]]>]]>``
+marker. Do not append this marker in custom RPC payloads; pyNetX appends it
+internally.
 
-System Requirements
--------------------
-- **Python** 3.11+  
-- **Libraries**:  
-  - ``libxml2``, ``libxslt`` for XML parsing  
-  - ``libssh2``, ``tinyxml2``, and possibly ``audit`` (depends on your OS)  
-- **Build Dependencies** (if installing from source):
-  - ``setuptools``, ``wheel``, ``cmake``, ``scikit-build``, ``pybind11``
+NETCONF 1.1 chunked framing is not part of v2.0.6.
 
-On Debian or Ubuntu, for example, you might install required packages with:
+Async-first direction
+---------------------
 
-.. code-block:: bash
+Starting with v2.0.5, explicit synchronous flow APIs are deprecated. They remain
+available for compatibility, but new code should use async methods for session
+management, RPC execution, configuration operations, and subscriptions.
 
-   sudo apt-get update
-   sudo apt-get install libxml2-dev libxslt1-dev libssh2-1-dev tinyxml2-dev audit
+The following helper APIs are not deprecated:
 
-Why Use pyNetX?
----------------
-1. **One-stop**: Instead of piecing together multiple libraries for SSH and XML, 
-   pyNetX offers a single library specifically tailored for NETCONF.
-2. **Performance**: Written in C++ with Python bindings, providing low-level 
-   performance without losing Python’s ease of use.
-3. **Async-Ready**: Perfect for large-scale or event-driven architectures— 
-   run multiple device interactions in parallel with full asyncio support.
+- ``next_notification()``
+- ``next_notification_async()``
+- ``peek_notifications()``
+- ``notification_queue_size()``
+- ``is_subscription_active()``
+- ``delete_subscription()``
+- notification health event APIs
+- global thread-pool and reactor configuration APIs
 
-Getting Started
----------------
-1. **Install pyNetX** from PyPI:
+New in v2.0.6
+-------------
 
-   .. code-block:: bash
-
-      pip install pyNetX==2.0.5
-
-   Or from source:
-
-   .. code-block:: bash
-
-      git clone https://github.com/jackofsometrades99/pyNetX.git
-      cd pyNetX
-      python setup.py install
-
-2. **Basic Usage**:
-
-   .. code-block:: python
-
-      from pyNetX import NetconfClient
-
-      # Synchronous example
-      client = NetconfClient(
-          hostname="192.168.1.1",
-          port=830,
-          username="admin",
-          password="admin",
-          connect_timeout=30,
-          read_timeout=30,
-          socket_connect_timeout=5,
-      )
-      client.connect_sync()
-      running_config = client.get_config_sync(source="running")
-      print(running_config)
-      client.disconnect_sync()
-
-3. **Check Out the API**:
-   - See :doc:`examples` for more examples and usage patterns.
-   - Refer to :doc:`api_reference` for a complete list of methods and parameters.
-
-Contributing
-------------
-We welcome contributions! If you would like to fix bugs, 
-improve documentation, or add new features:
-
-1. Fork the GitHub repository.
-2. Create a new branch and make your changes.
-3. Submit a pull request and wait for feedback.
-
-Next Steps
-----------
-Ready to dive deeper? Explore the next sections for detailed usage 
-instructions, advanced features, and examples:
-
-- :doc:`api_reference`
-- :doc:`examples`
+- ``NetconfClient(..., label="...")`` stores a user-defined device label.
+- ``NotificationHealthEvent.timestamp`` contains the event creation time as a
+  UTC ISO-8601 string with millisecond precision.
+- ``NotificationHealthEvent.label`` helps users identify the device that
+  produced the event.
+- ``event.as_dict()`` includes both ``timestamp`` and ``label``.
+- Timeout events explicitly use ``label == "None"`` because they are generated
+  by the global event bus rather than a specific device.
+- The test suite includes deeper fake NETCONF integration tests and optional
+  real Netopeer2/Sysrepo integration tests.

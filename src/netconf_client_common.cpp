@@ -27,12 +27,12 @@ NetconfClient::NetconfClient(
     const std::string& key_path, int connect_timeout, int read_timeout,
     int notif_queue_size, int socket_connect_timeout,
     int notif_incomplete_max_kb, int notif_incomplete_timeout,
-    int notif_drop_event_threshold
+    int notif_drop_event_threshold, const std::string& label
 )
     : hostname_(hostname), port_(port),
       username_(username), password_(password), key_path_(key_path),
-      session_(nullptr), channel_(nullptr), notif_session_(nullptr),
-      notif_channel_(nullptr), connect_timeout_(connect_timeout),
+      label_(label), session_(nullptr), channel_(nullptr),
+      notif_session_(nullptr), notif_channel_(nullptr), connect_timeout_(connect_timeout),
       read_timeout_(read_timeout), _notif_queue_max_size_(notif_queue_size),
       socket_connect_timeout_(socket_connect_timeout),
       notif_incomplete_max_kb_(notif_incomplete_max_kb),

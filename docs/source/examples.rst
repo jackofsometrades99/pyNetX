@@ -1,233 +1,135 @@
 Examples
 ========
 
-Below are two extended examples demonstrating how to interact with
-pyNetX both **synchronously** and **asynchronously** across multiple devices.
-
-Synchronous Multi-Device Example
---------------------------------
-
-In this example, we iterate over a list of devices, connect to each using
-the synchronous API, fetch the ``running`` configuration, then subscribe
-to notifications. We listen for notifications for a short period and
-finally disconnect. This entire process repeats every 60 seconds in
-an infinite loop.
-
-.. code-block:: python
-
-   import time
-   from pyNetX import (
-        NetconfClient,
-        NetconfConnectionRefusedError,
-        NetconfAuthError,
-        NetconfChannelError,
-        NetconfException
-   )
-
-   def sync_multi_device_example():
-       # A sample list of devices to manage
-       devices = [
-           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
-           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
-       ]
-
-       while True:
-           for dev in devices:
-               try:
-                    client = NetconfClient(
-                        hostname=dev["hostname"],
-                        port=dev["port"],
-                        username=dev["username"],
-                        password=dev["password"],
-                        connect_timeout=30,
-                        read_timeout=30,
-                        notif_queue_size=100,  # Optional: set a queue size for notifications
-                        socket_connect_timeout=dev.get("socket_connect_timeout", 5),
-                        notif_incomplete_max_kb=1024,
-                        notif_incomplete_timeout=5,
-                        notif_drop_event_threshold=1,
-                    )
-
-                    # Connect to the NETCONF server
-                    client.connect_sync()
-                    print(f"Connected to {dev['hostname']}")
-
-                    # Retrieve the running configuration
-                    running_config = client.get_config_sync(source="running")
-                    print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
-
-                    # Subscribe to NETCONF notifications
-                    client.subscribe_sync(stream="NETCONF")
-                    print(f"Subscribed to notifications on {dev['hostname']}")
-
-                    # Receive notifications for a short duration (e.g., 5 seconds)
-                    start_time = time.time()
-                    while (time.time() - start_time) < 5:
-                        notification = client.receive_notification_sync()
-                        if notification:
-                            print(f"[{dev['hostname']}] Notification:\n{notification}\n")
-
-                    # Disconnect
-                    client.disconnect_sync()
-                    print(f"Disconnected from {dev['hostname']}\n")
-                except (NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
-                    # Handle known pyNetX exceptions here
-                    pass
-                except Exception as error:
-                    # Handle unexpected exceptions here
-                    pass
-           # Wait for 60 seconds before reconnecting
-           print("Waiting 60 seconds before next iteration...\n")
-           time.sleep(60)
-   if __name__ == "__main__":
-       sync_multi_device_example()
-
-
-Asynchronous Multi-Device Example
----------------------------------
-
-This example uses Python’s ``asyncio`` to connect to multiple devices
-concurrently. We fetch each device’s running configuration, subscribe
-to notifications, and continuously read them for a short duration.
-Then we disconnect and repeat the cycle every 60 seconds. Because it is
-async, you can potentially expand this to handle hundreds of devices
-in parallel (subject to resource and performance constraints).
-
-.. code-block:: python
-
-   import asyncio
-   import pyNetX
-   from pyNetX import (
-        NetconfClient,
-        NetconfConnectionRefusedError,
-        NetconfAuthError,
-        NetconfChannelError,
-        NetconfException
-   )
-
-   async def async_multi_device_example():
-       # Controls how many NETCONF worker operations can run concurrently
-       # across clients/devices. Async completion uses a shared dispatcher
-       # internally in v2.0.4+.
-       pyNetX.set_threadpool_size(10)
-
-       # A sample list of devices to manage
-       devices = [
-           {"hostname": "192.168.1.1", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
-           {"hostname": "192.168.1.2", "port": 830, "username": "admin", "password": "admin", "socket_connect_timeout": 5},
-       ]
-
-       while True:
-           # Connect to each device, fetch config, subscribe, receive notifications
-           for dev in devices:
-                try:
-                    client = NetconfClient(
-                        hostname=dev["hostname"],
-                        port=dev["port"],
-                        username=dev["username"],
-                        password=dev["password"],
-                        connect_timeout=30,
-                        read_timeout=30,
-                        notif_queue_size=100,  # Optional: set a queue size for notifications
-                        socket_connect_timeout=dev.get("socket_connect_timeout", 5),
-                        notif_incomplete_max_kb=1024,
-                        notif_incomplete_timeout=5,
-                        notif_drop_event_threshold=1,
-                    )
-
-                    # Asynchronously connect
-                    await client.connect_async()
-                    print(f"Connected to {dev['hostname']}")
-
-                    # Retrieve the running configuration
-                    running_config = await client.get_config_async(source="running")
-                    print(f"[{dev['hostname']}] Running Config:\n{running_config}\n")
-
-                    # Subscribe to NETCONF notifications
-                    await client.subscribe_async(stream="NETCONF")
-                    print(f"Subscribed to notifications on {dev['hostname']}")
-
-                    # Asynchronously receive notifications for a short duration
-                    end_time = asyncio.get_event_loop().time() + 5  # e.g., 5 seconds
-                    while asyncio.get_event_loop().time() < end_time:
-                        notification = client.next_notification()
-                        if not notification:
-                            await asyncio.sleep(0.01)
-                            continue
-
-                        print(f"[{dev['hostname']}] Notification:\n{notification}\n")
-
-                    # Disconnect
-                    await client.disconnect_async()
-                    print(f"Disconnected from {dev['hostname']}\n")
-                except (NetconfConnectionRefusedError, NetconfAuthError, NetconfChannelError, NetconfException) as error:
-                    # Handle known pyNetX exceptions here
-                    pass
-                except Exception as error:
-                    # Handle unexpected exceptions here
-                    pass
-           # Wait 60 seconds before next iteration
-           print("Waiting 60 seconds before next iteration...\n")
-           await asyncio.sleep(60)
-
-   if __name__ == "__main__":
-       asyncio.run(async_multi_device_example())
-
-
-
-Notification Health Event Monitor
----------------------------------
-
-The notification health event stream is process-wide. It reports queue-full
-conditions, queue recovery, dropped notifications, and incomplete notification
-reads.
+Async multi-device get-config
+-----------------------------
 
 .. code-block:: python
 
    import asyncio
    import pyNetX
 
-   async def notification_health_monitor():
-       while True:
-           event = await pyNetX.next_notification_event_async(timeout_ms=-1)
-           if event.valid:
-               print("Notification health event:", event.as_dict())
+   DEVICES = [
+       {"hostname": "192.168.1.1", "username": "admin", "password": "admin", "label": "leaf-01"},
+       {"hostname": "192.168.1.2", "username": "admin", "password": "admin", "label": "leaf-02"},
+   ]
+
+   async def collect_running_config(device):
+       client = pyNetX.NetconfClient(
+           hostname=device["hostname"],
+           username=device["username"],
+           password=device["password"],
+           label=device["label"],
+           connect_timeout=30,
+           read_timeout=30,
+           socket_connect_timeout=5,
+       )
+       await client.connect_async()
+       try:
+           return await client.get_config_async(source="running")
+       finally:
+           await client.disconnect_async()
 
    async def main():
-       asyncio.create_task(notification_health_monitor())
-       # Create clients, connect, subscribe, and consume notifications here.
-       await asyncio.sleep(3600)
+       pyNetX.set_threadpool_size(8)
+       results = await asyncio.gather(*(collect_running_config(d) for d in DEVICES))
+       for result in results:
+           print(result)
 
    asyncio.run(main())
 
-Notes & Customization
----------------------
-- **Device List**: Update the hostname, port, username, and password in
-  these scripts to match your environment.  
-- **Timing & Retries**: Adjust how long you listen for notifications
-  (in these examples, 5 seconds) or how long you wait (60 seconds) between
-  cycles.  
-- **Notification Handling**: In a real production scenario, you might
-  parse or log notifications to a database rather than just printing them.  
-- **Error Handling**: Consider catching exceptions like
-  ``NetconfAuthError`` or ``NetconfConnectionRefusedError`` around
-  the connect statements.  
-- **Timeouts**: Use ``connect_timeout``, ``read_timeout``, and
-  ``socket_connect_timeout`` to control connection setup and read behavior.
-  Use ``notif_incomplete_max_kb`` and ``notif_incomplete_timeout`` to protect
-  the notification reactor from malformed partial notification streams.
-- **Thread Pool Size**: If you need to handle many devices concurrently
-  in the async example, you might want to increase the global thread pool
-  size by calling ``pyNetX.set_threadpool_size(n)`` before creating
-  any clients. Starting with v2.0.4, async completion uses a shared dispatcher
-  instead of one watcher thread per async call.
-- **Same-Client Serialization**: Multiple RPCs submitted on the same
-  ``NetconfClient`` RPC channel are serialized. Use separate clients/sessions
-  for true parallelism across devices.
-- **Async Exceptions**: Async methods raise the same pyNetX exception classes
-  as synchronous methods in v2.0.4+.
-- **Notification Health Events**: In production, run one health-event monitor
-  task if you use bounded queues or want visibility into incomplete notifications.
+Notification consumer with health monitor
+-----------------------------------------
 
-These examples serve as a starting point for building more robust
-network management tools using **pyNetX**.
+.. code-block:: python
+
+   import asyncio
+   import pyNetX
+
+   async def monitor_health():
+       while True:
+           event = await pyNetX.next_notification_event_async(timeout_ms=-1)
+           print("health:", event.as_dict())
+
+   async def consume_device(device):
+       client = pyNetX.NetconfClient(
+           hostname=device["hostname"],
+           username=device["username"],
+           password=device["password"],
+           notif_queue_size=1000,
+           notif_drop_event_threshold=10,
+           label=device["label"],
+       )
+
+       await client.connect_async()
+       try:
+           await client.subscribe_async(stream="NETCONF")
+           while client.is_subscription_active():
+               notification = await client.next_notification_async(timeout_ms=1000)
+               if notification:
+                   print(device["label"], notification)
+       finally:
+           try:
+               client.delete_subscription()
+           finally:
+               await client.disconnect_async()
+
+   async def main():
+       pyNetX.set_threadpool_size(16)
+       pyNetX.set_notification_reactor_count(4)
+
+       device = {
+           "hostname": "192.168.1.1",
+           "username": "admin",
+           "password": "admin",
+           "label": "leaf-01",
+       }
+
+       await asyncio.gather(
+           monitor_health(),
+           consume_device(device),
+       )
+
+   asyncio.run(main())
+
+Safe edit-config pattern
+------------------------
+
+.. code-block:: python
+
+   async def update_config(client, config_xml):
+       await client.lock_async("candidate")
+       try:
+           reply = await client.edit_config_async("candidate", config_xml, do_validate=True)
+           commit = await client.commit_async()
+           return reply, commit
+       finally:
+           await client.unlock_async("candidate")
+
+Custom RPC helper
+-----------------
+
+.. code-block:: python
+
+   async def get_with_custom_rpc(client):
+       rpc = """
+       <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+         <get/>
+       </rpc>
+       """
+       return await client.send_rpc_async(rpc)
+
+Queue inspection
+----------------
+
+.. code-block:: python
+
+   size = client.notification_queue_size()
+   preview = client.peek_notifications(max_items=5)
+   all_current = client.peek_notifications(max_items=-1)
+
+Deprecated sync APIs
+--------------------
+
+Explicit sync-flow APIs are deprecated. Do not use them in new examples or new
+applications. Use the async APIs shown above.

@@ -1,0 +1,6 @@
+services:
+  netopeer2:
+    image: ${PYNETX_NETOPEER_IMAGE:-sysrepo/sysrepo-netopeer2:latest}
+    container_name: pynetx-netopeer2
+    ports:
+      - "830:830"

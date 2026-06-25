@@ -8,9 +8,13 @@
 #include <mutex>
 #include <string>
 
+std::string current_notification_event_timestamp_utc();
+
 struct NotificationHealthEvent {
     bool valid = true;
     std::string type;
+    std::string timestamp;
+    std::string label = "None";
     std::string hostname;
     int port = 0;
     int fd = -1;

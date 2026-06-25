@@ -12,6 +12,8 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 build_commands_for_pyNetX.sh
+netopeer2_testing_steps.md
+get-pip.py
 
 # Miscellaneous
 .DS_Store
