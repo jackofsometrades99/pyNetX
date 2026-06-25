@@ -4,25 +4,14 @@
 
 ### Async-first NETCONF automation for Python
 
-**pyNetX** is a production-grade, high-performance Python library for building NETCONF clients, automation scripts, and network applications at scale. It combines a clean Python API with a C++/pybind11 core, non-blocking libssh2 I/O, asyncio-friendly futures, epoll-backed notification reactors, and production-focused notification observability.
-
-Designed for demanding network automation workloads, pyNetX has been battle-tested with **1,000+ real devices in a single instance** under high load, high throughput, and strict resource constraints.
+**pyNetX** is a high-performance Python NETCONF client library with a native C++/pybind11 backend. It provides asyncio-friendly NETCONF RPCs, SSH-based NETCONF sessions, notification subscriptions, epoll-backed notification reactors, bounded notification queues, and process-wide notification health events.
 
 <br />
 
 [![PyPI](https://img.shields.io/pypi/v/pyNetX?label=PyPI&color=2563eb)](https://pypi.org/project/pyNetX/)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab)](#requirements)
-[![Version](https://img.shields.io/badge/Stable-v2.0.5-16a34a)](#v205--latest)
-[![NETCONF](https://img.shields.io/badge/Protocol-NETCONF-orange)](#why-pynetx)
-
-<br />
-
-
-### 👉 [Open the interactive pyNetX website](https://jackofsometrades99.github.io/pynetx-website/)
-
-<br />
-
-The website is the easiest way to understand how pyNetX works. It shows the async flow, notification reactor, event stream, worker pool, and latest v2.0.5 architecture visually with interactive 3D-style illustrations.
+[![Version](https://img.shields.io/badge/Stable-v2.0.6-16a34a)](#v206--latest)
+[![Protocol](https://img.shields.io/badge/Protocol-NETCONF-orange)](#why-pynetx)
 
 <br />
 
@@ -37,27 +26,33 @@ The website is the easiest way to understand how pyNetX works. It shows the asyn
 
 ## Why pyNetX?
 
-pyNetX is built for users who need more than a simple blocking NETCONF script. It is designed for async applications, large notification workloads, and safer production automation.
+pyNetX is built for users who need more than a simple blocking NETCONF script. It is designed for async applications, multi-device automation, notification-heavy workloads, and production observability.
 
 | Capability | What it gives you |
 |---|---|
-| **Async-first NETCONF API** | Use `await client.connect_async()`, `await client.get_config_async()`, and other asyncio-friendly methods. |
-| **C++ core with pybind11** | NETCONF work runs in a native backend while exposing a clean Python interface. |
-| **Shared worker pool** | Async NETCONF operations are submitted to a configurable C++ thread pool. |
-| **Shared async dispatcher** | Python `asyncio.Future` objects are completed safely on the event-loop thread. |
-| **epoll notification reactor** | Notification sockets are monitored by background reactor threads instead of one Python thread per device. |
-| **Notification health event stream** | v2.0.5 adds process-wide health events for queue pressure, drops, recovery, and malformed/incomplete notifications. |
-| **Safer bad-device handling** | Incomplete notification guards prevent a bad device from trapping the reactor forever. |
+| **Async-first NETCONF API** | Use `await client.connect_async()`, `await client.get_config_async()`, `await client.edit_config_async()`, and other asyncio-friendly methods. |
+| **C++ core with pybind11** | NETCONF work runs in a native backend while exposing a clean Python API. |
+| **Shared worker pool** | Async NETCONF operations are submitted to a configurable C++ worker pool. |
+| **Async result dispatcher** | C++ futures are bridged safely back to Python `asyncio.Future` objects. |
+| **Separate notification session** | Notification subscriptions use a separate SSH/NETCONF session from normal RPC traffic. |
+| **epoll notification reactors** | Notification sockets are monitored by background reactors instead of one Python thread per device. |
+| **Bounded notification queues** | Per-client queues can be unbounded or bounded for controlled memory usage. |
+| **Health event stream** | Queue-full, drops, recovery, incomplete notifications, and timeout events are observable through `NotificationHealthEvent`. |
+| **Device labels** | v2.0.6 adds a user-provided `label` field to health events so devices can be identified beyond hostname/IP. |
+| **Event timestamps** | v2.0.6 adds UTC ISO-8601 millisecond timestamps to health events. |
+| **Expanded testing** | v2.0.6 includes deeper fake NETCONF integration tests and optional real Netopeer2/Sysrepo tests. |
+
+> Current protocol framing: pyNetX uses NETCONF 1.0 end-of-message framing (`]]>]]>`). NETCONF 1.1 chunked framing is not part of this release.
 
 ---
 
 ## Install
 
 ```bash
-pip install pyNetX==2.0.5
+pip install pyNetX==2.0.6
 ```
 
-Or install the latest available version:
+Or install the latest available release:
 
 ```bash
 pip install pyNetX
@@ -66,14 +61,17 @@ pip install pyNetX
 ### Requirements
 
 - Python **3.11+**
-- Build dependencies: `setuptools`, `wheel`, `cmake`, `scikit-build`, `pybind11`
-- System libraries: `libxml2`, `libxslt`, `libssh2`, `tinyxml2`
+- Build dependencies when building from source: `setuptools`, `wheel`, `cmake`, `scikit-build`, `pybind11`
+- Native libraries when building from source: `libssh2`, `tinyxml2`, OpenSSL-compatible TLS libraries
 
-On Debian/Ubuntu:
+On Debian/Ubuntu, source builds usually require development packages similar to:
 
 ```bash
-sudo apt-get install libxml2-dev libxslt1-dev libssh2-dev tinyxml2-dev audit
+sudo apt-get update
+sudo apt-get install -y cmake build-essential libssh2-1-dev libtinyxml2-dev
 ```
+
+When installing a manylinux wheel from PyPI, the required native dependencies are bundled into the repaired wheel where applicable.
 
 ---
 
@@ -96,21 +94,56 @@ async def main():
         notif_incomplete_max_kb=1024,
         notif_incomplete_timeout=5,
         notif_drop_event_threshold=1,
+        label="leaf-01",
     )
 
     await client.connect_async()
 
-    config = await client.get_config_async(source="running")
-    print(config)
-
-    await client.disconnect_async()
+    try:
+        reply = await client.get_config_async(source="running")
+        print(reply)
+    finally:
+        await client.disconnect_async()
 
 asyncio.run(main())
 ```
 
 ---
 
-## Quick start: notifications with async queue reads
+## Quick start: custom RPC
+
+```python
+import asyncio
+import pyNetX
+
+async def main():
+    client = pyNetX.NetconfClient(
+        hostname="192.168.1.1",
+        username="admin",
+        password="admin",
+        label="leaf-01",
+    )
+
+    await client.connect_async()
+    try:
+        rpc = """
+        <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+          <get/>
+        </rpc>
+        """
+        reply = await client.send_rpc_async(rpc)
+        print(reply)
+    finally:
+        await client.disconnect_async()
+
+asyncio.run(main())
+```
+
+Do not append the NETCONF end marker yourself. pyNetX appends `]]>]]>` internally.
+
+---
+
+## Quick start: notifications
 
 ```python
 import asyncio
@@ -119,119 +152,82 @@ import pyNetX
 async def consume_notifications():
     client = pyNetX.NetconfClient(
         hostname="192.168.1.1",
-        port=830,
         username="admin",
         password="admin",
         notif_queue_size=1000,
-        notif_incomplete_max_kb=1024,
-        notif_incomplete_timeout=5,
-        notif_drop_event_threshold=1,
+        label="leaf-01",
     )
 
     await client.connect_async()
-    await client.subscribe_async(stream="NETCONF")
+    try:
+        await client.subscribe_async(stream="NETCONF")
 
-    while client.is_subscription_active():
-        notification = await client.next_notification_async(timeout_ms=1000)
-        if notification:
-            print("Notification:", notification)
+        while client.is_subscription_active():
+            notification = await client.next_notification_async(timeout_ms=1000)
+            if notification:
+                print("Notification:", notification)
+    finally:
+        try:
+            client.delete_subscription()
+        finally:
+            await client.disconnect_async()
 
 asyncio.run(consume_notifications())
 ```
 
-`next_notification_async()` is new in **v2.0.5**. It is the awaitable version of `next_notification(timeout_ms=10)`.
+pyNetX uses a separate notification SSH/NETCONF session for subscriptions, so normal RPCs can continue on the primary session while notifications are being received.
 
 ---
 
-## Quick start: notification health event stream
+## Quick start: notification health events
 
-pyNetX **v2.0.5** adds a process-wide event stream for notification system health.
-
-Use it to observe:
-
-- bounded notification queues becoming full,
-- notification drops,
-- queue recovery,
-- incomplete or malformed notification reads,
-- health-event drops if the event bus itself becomes full.
+pyNetX v2.0.6 health events include both `timestamp` and `label`:
 
 ```python
 import asyncio
 import pyNetX
 
-async def monitor_notification_health():
+async def monitor_health_events():
     while True:
         event = await pyNetX.next_notification_event_async(timeout_ms=-1)
-        if event.valid:
-            print(event.as_dict())
+        print(event.as_dict())
 
-asyncio.run(monitor_notification_health())
+asyncio.run(monitor_health_events())
+```
+
+Example health event:
+
+```python
+{
+    "valid": True,
+    "type": "notification_queue_full",
+    "timestamp": "2026-06-25T05:35:15.123Z",
+    "label": "leaf-01",
+    "hostname": "172.24.30.116",
+    "port": 830,
+    "fd": 97,
+    "message": "Notification queue is full; dropping notifications",
+    "queue_size": 2,
+    "queue_max_size": 2,
+    "queue_high_watermark": 2,
+    "notifications_enqueued": 32,
+    "notifications_dropped_queue_full": 3,
+    "notifications_dropped_delta": 1,
+    "incomplete_notifications_received": 0,
+    "partial_bytes": 0,
+    "health_events_dropped": 0,
+}
 ```
 
 Common event types:
 
 | Event type | Meaning |
 |---|---|
-| `notification_queue_full` | A bounded per-client notification queue first became full and a notification was dropped. |
-| `notification_drops_summary` | Additional notifications were dropped while the queue remained full. Frequency is controlled by `notif_drop_event_threshold`. |
+| `notification_queue_full` | A bounded per-client notification queue became full and a notification was dropped. |
+| `notification_drops_summary` | More notifications were dropped while the queue remained full. Frequency is controlled by `notif_drop_event_threshold`. |
 | `notification_queue_recovered` | A previously full queue has free capacity again. |
-| `incomplete_notification` | Partial notification data was received without the NETCONF `]]>]]>` EOM marker and an incomplete-notification guard fired. |
-| `timeout` | No health event was available before the requested timeout. This event has `valid == False`. |
-
----
-
-## What changed in v2.0.5?
-
-### v2.0.5 — latest
-
-The **2.0.5** release focuses on notification observability, safer reactor behavior, and making pyNetX more clearly async-first.
-
-| New in v2.0.5 | Description |
-|---|---|
-| `NotificationHealthEvent` | Structured health event object with fields and `as_dict()`. |
-| `pyNetX.next_notification_event()` | Synchronous helper for reading the process-wide notification health event stream. |
-| `pyNetX.next_notification_event_async()` | Awaitable health event stream API. |
-| `pyNetX.pending_notification_event_count()` | Returns queued health-event count. |
-| `pyNetX.clear_notification_events()` | Clears queued health events and resets the dropped-health-event counter. |
-| `client.next_notification_async()` | Awaitable notification queue read API. |
-| GIL release in `next_notification()` | The synchronous notification queue helper releases the Python GIL while waiting. |
-| `notif_incomplete_max_kb` | Size guard for incomplete notification XML. |
-| `notif_incomplete_timeout` | Time guard for partial notifications that never receive EOM. |
-| `notif_drop_event_threshold` | Controls how often queue-full drop events are emitted. Default: `1`. |
-| Sync-flow deprecation warning | Explicit sync-flow APIs are deprecated; async methods are the preferred path. |
-
----
-
-## Architecture at a glance
-
-```mermaid
-flowchart LR
-    PY[Python asyncio app] --> FUT[asyncio.Future]
-    FUT --> BIND[pybind11 bridge]
-    BIND --> POOL[C++ worker pool]
-    POOL --> SSH[libssh2 NETCONF session]
-    SSH --> DEVICE[NETCONF device]
-    POOL --> DISP[shared async dispatcher]
-    DISP --> LOOP[Python event loop]
-    LOOP --> PY
-```
-
-Async NETCONF calls are submitted to a shared C++ worker pool. The result is bridged back into Python as an `asyncio.Future`, and completion is scheduled safely on the Python event loop.
-
-Notification handling uses a separate reactor path:
-
-```mermaid
-flowchart LR
-    DEV[NETCONF device] --> SOCK[notification SSH channel]
-    SOCK --> EPOLL[epoll reactor]
-    EPOLL --> QUEUE[per-client notification queue]
-    QUEUE --> NEXT[next_notification_async]
-    EPOLL --> HEALTH[NotificationHealthEvent stream]
-    HEALTH --> MONITOR[monitoring task]
-```
-
-The website shows these flows visually with interactive architecture illustrations:  
-**https://jackofsometrades99.github.io/pynetx-website/**
+| `incomplete_notification` | Partial notification data was received without the NETCONF `]]>]]>` EOM marker and a guard fired. |
+| `timeout` | No health event was available before the requested timeout. This event has `valid == False` and `label == "None"`. |
 
 ---
 
@@ -251,6 +247,7 @@ client = pyNetX.NetconfClient(
     notif_incomplete_max_kb=1024,
     notif_incomplete_timeout=5,
     notif_drop_event_threshold=1,
+    label="None",
 )
 ```
 
@@ -262,12 +259,13 @@ client = pyNetX.NetconfClient(
 | `password` | required | SSH password. |
 | `key_path` | `""` | Reserved for key-based authentication. Current authentication path uses password auth. |
 | `connect_timeout` | `60` | Overall timeout for connection/session setup. |
-| `read_timeout` | `60` | Timeout while waiting for device RPC replies or NETCONF messages. Use a negative value to wait indefinitely. |
+| `read_timeout` | `60` | Timeout while waiting for device RPC replies or NETCONF messages. Must be greater than zero in the current public constructor. |
 | `notif_queue_size` | `-1` | Per-client notification queue size. `-1` means unbounded. Non-negative values bound the queue. |
 | `socket_connect_timeout` | `5` | TCP socket connection timeout. Must be greater than `0` and less than or equal to `connect_timeout`. |
 | `notif_incomplete_max_kb` | `1024` | Maximum partial notification size, in KiB, before pyNetX returns the partial notification and emits a health event. Use `-1` to disable this guard. |
 | `notif_incomplete_timeout` | `5` | Maximum time, in seconds, to wait for a notification EOM marker after partial data starts arriving. Use `-1` to disable this guard. |
 | `notif_drop_event_threshold` | `1` | Number of additional queue-full drops before another queue-full health event is emitted. Must be greater than `0`. |
+| `label` | `"None"` | User-defined string copied into notification health events for easier device identification. |
 
 Use keyword arguments when constructing clients. This avoids positional-order confusion and makes new release parameters safer to adopt.
 
@@ -275,14 +273,14 @@ At least one incomplete-notification guard must remain enabled. Do not set both 
 
 ---
 
-## API overview
+## Public API overview
 
 ### Recommended async flow APIs
 
 | Method | Purpose |
 |---|---|
 | `await client.connect_async()` | Open a NETCONF session. |
-| `await client.disconnect_async()` | Close the session. |
+| `await client.disconnect_async()` | Close the primary session and clean up. |
 | `await client.send_rpc_async(rpc)` | Send a custom NETCONF RPC. |
 | `await client.get_async(filter="")` | Run NETCONF `<get>`. |
 | `await client.get_config_async(source="running", filter="")` | Read configuration. |
@@ -290,26 +288,26 @@ At least one incomplete-notification guard must remain enabled. Do not set both 
 | `await client.delete_config_async(target)` | Delete datastore. |
 | `await client.validate_async(source="running")` | Validate datastore. |
 | `await client.edit_config_async(target, config, do_validate=False)` | Edit configuration. |
-| `await client.subscribe_async(stream="NETCONF", filter="")` | Create notification subscription. |
+| `await client.subscribe_async(stream="NETCONF", filter="")` | Create notification subscription on a separate notification session. |
 | `await client.lock_async(target="running")` | Lock datastore. |
 | `await client.unlock_async(target="running")` | Unlock datastore. |
 | `await client.commit_async()` | Commit candidate changes where supported. |
-| `await client.locked_edit_config_async(target, config, do_validate=False)` | Lock, edit, optionally validate, and unlock. |
+| `await client.locked_edit_config_async(target, config, do_validate=False)` | Lock, edit, optionally validate, commit, and unlock. |
 
-### Notification queue helpers
+### Supported notification helper APIs
 
-These are **not deprecated**.
+These helpers are **not deprecated**.
 
 | Method | Purpose |
 |---|---|
 | `client.next_notification(timeout_ms=10)` | Synchronous helper for queued notifications. Releases the GIL while waiting. |
 | `await client.next_notification_async(timeout_ms=10)` | Awaitable notification queue read. |
-| `client.peek_notifications(max_items=100)` | Inspect queued notifications without consuming them. |
+| `client.peek_notifications(max_items=100)` | Inspect queued notifications without consuming them. Use `-1` for all currently queued notifications. |
 | `client.notification_queue_size()` | Return current notification queue depth. |
 | `client.is_subscription_active()` | Check whether the notification subscription is active. |
 | `client.delete_subscription()` | Delete the notification subscription/session. |
 
-### Notification health event APIs
+### Process-wide notification health event APIs
 
 | Function | Purpose |
 |---|---|
@@ -331,7 +329,7 @@ Set these during process startup before active operations.
 
 ## Deprecation notice: explicit sync-flow APIs
 
-Starting with **v2.0.5**, the explicit synchronous flow APIs are deprecated and will be removed in a future major release. pyNetX is moving toward an async-focused API for connection handling, RPC execution, configuration operations, and subscriptions.
+Starting with v2.0.5, explicit synchronous flow APIs are deprecated and will be removed in a future major release. pyNetX is moving toward an async-focused API for connection handling, RPC execution, configuration operations, and subscriptions.
 
 Deprecated methods:
 
@@ -355,19 +353,15 @@ locked_edit_config_sync
 
 Common/helper APIs are **not** deprecated. This includes `next_notification`, `next_notification_async`, queue inspection, event-stream APIs, `delete_subscription`, `set_threadpool_size`, and `set_notification_reactor_count`.
 
-### Migration example
-
-Before:
+Migration example:
 
 ```python
+# Deprecated
 client.connect_sync()
 reply = client.get_config_sync(source="running")
 client.disconnect_sync()
-```
 
-After:
-
-```python
+# Recommended
 await client.connect_async()
 reply = await client.get_config_async(source="running")
 await client.disconnect_async()
@@ -376,19 +370,6 @@ await client.disconnect_async()
 ---
 
 ## Error handling
-
-pyNetX exposes public exception classes for NETCONF-related failures:
-
-```python
-from pyNetX import (
-    NetconfConnectionRefusedError,
-    NetconfAuthError,
-    NetconfChannelError,
-    NetconfException,
-)
-```
-
-Example:
 
 ```python
 try:
@@ -403,107 +384,81 @@ except pyNetX.NetconfException as exc:
     print("NETCONF error:", exc)
 ```
 
-Async methods preserve the same public pyNetX exception classes used by the sync API.
+Async methods preserve public pyNetX exception classes where the C++ backend emits them. Some low-level validation failures from the binding layer may be raised as `RuntimeError` or Python type-conversion exceptions.
 
 ---
 
 ## Scaling recommendations
 
-### Worker pool
-
 ```python
 import pyNetX
 
-pyNetX.set_threadpool_size(10)
-```
-
-This controls how many NETCONF worker operations can run concurrently across all clients/devices. Operations on the same `NetconfClient` RPC channel remain serialized to preserve request/reply ordering.
-
-### Notification reactor count
-
-```python
-import pyNetX
-
+pyNetX.set_threadpool_size(16)
 pyNetX.set_notification_reactor_count(8)
 ```
 
-This controls how many background epoll reactor threads monitor notification sockets. For large deployments, configure this once during startup before creating many subscriptions.
+Guidelines:
 
-### Event monitor tasks
-
-`next_notification_event_async(timeout_ms=-1)` waits indefinitely and can occupy a worker thread. In production, run a small number of long-lived event monitor tasks and size the worker pool accordingly.
+- Configure global thread-pool and reactor counts once during process startup.
+- Operations on the same `NetconfClient` RPC channel are serialized to preserve request/reply ordering.
+- Use separate `NetconfClient` objects for independent devices.
+- Use bounded queues when you need strict memory control.
+- Monitor `NotificationHealthEvent` when using bounded queues or high notification rates.
+- `next_notification_event_async(timeout_ms=-1)` waits indefinitely and can occupy a worker. Size the worker pool accordingly.
 
 ---
 
-## Release history
+## Testing
 
-### v2.0.5 — latest
+The test suite is in `test/` and focuses on the non-deprecated public API.
 
-- Added notification health event stream.
-- Added `NotificationHealthEvent` and `event.as_dict()`.
-- Added `next_notification_event`, `next_notification_event_async`, `pending_notification_event_count`, and `clear_notification_events`.
-- Added `next_notification_async`.
-- Added early GIL release in `next_notification` while waiting on the notification queue.
-- Added incomplete-notification guards: `notif_incomplete_max_kb` and `notif_incomplete_timeout`.
-- Added `notif_drop_event_threshold` for queue-full health event frequency.
-- Added queue inspection helpers: `peek_notifications` and `notification_queue_size`.
-- Deprecated explicit synchronous flow APIs.
+Run all default tests, excluding optional Netopeer2 tests:
 
-### v2.0.4
+```bash
+pytest -c test/pytest.ini test -m "not netopeer" -ra --tb=short
+```
 
-- Added user-configurable `socket_connect_timeout`.
-- Reduced CPU usage for non-blocking reads by waiting on socket readiness with `poll()`.
-- Replaced one watcher thread per async operation with a shared async future dispatcher.
-- Async methods now preserve pyNetX custom exception types.
+Run only fast tests:
 
-### v2.0.3
+```bash
+pytest -c test/pytest.ini test -m "not integration and not netopeer" -ra --tb=short
+```
 
-- Hardened notification reactor exception handling.
-- Registered notification sockets only after subscription RPC success.
-- Improved notification cleanup and subscription state safety.
-- Added safer weak-reference handling in the notification reactor.
+Run optional real Netopeer2/Sysrepo tests:
 
-### v2.0.2
+```bash
+PYNETX_RUN_NETOPEER=1 pytest -c test/pytest.ini test -m netopeer -ra --tb=short
+```
 
-- Improved exception handling to prevent Python process crashes.
-- Added `notif_queue_size` for internal notification queues.
-- Added global release builds for Python 3.11, 3.12, 3.13, and 3.14.
+When testing wheels, run pytest from outside the source tree so Python imports the installed wheel instead of the local `pyNetX/` source directory.
 
-### v1.0.9
+See `docs/source/testing.rst` or the generated documentation for the full test coverage map and manylinux/Netopeer2 release workflow.
 
-- Added cancellation-safe asyncio bridge guard to avoid `InvalidStateError` after Python future cancellation.
+---
 
-### v1.0.8
+## v2.0.6 — latest
 
-- Reimplemented notification monitoring with an epoll-based notification subsystem.
-- Added `set_notification_reactor_count()`.
-- Removed `receive_notification_async()`; use `next_notification()` or `next_notification_async()`.
+v2.0.6 focuses on better device identification, event timing, and stronger release testing.
+
+Highlights:
+
+- Added `label` constructor argument to `NetconfClient`.
+- Added `label` field to `NotificationHealthEvent` and `event.as_dict()`.
+- Added UTC ISO-8601 millisecond `timestamp` field to `NotificationHealthEvent` and `event.as_dict()`.
+- Timeout events explicitly set `label == "None"`.
+- Expanded pytest coverage for non-deprecated API contracts, constructor validation, event bus behavior, notification queues, fake NETCONF SSH integration, RPC payload/framing behavior, lifecycle/concurrency, and static source contracts.
+- Added optional real Netopeer2/Sysrepo integration tests.
+- Added release workflow documentation for testing repaired manylinux wheels before PyPI upload.
+
+See `docs/source/release_notes.rst` for full release history.
 
 ---
 
 ## Documentation and links
 
-<div align="center">
-
-### The best way to learn pyNetX is through the website.
-
-## [🚀 Launch the interactive pyNetX website](https://jackofsometrades99.github.io/pynetx-website/)
-
-The website explains the library visually, including the async worker pool, notification reactor, event stream, queue pressure handling, and incomplete-notification protection.
-
-</div>
-
 | Resource | Link |
 |---|---|
-| Interactive website | https://jackofsometrades99.github.io/pynetx-website/ |
-| Full documentation | https://pynetx.readthedocs.io/en/latest/ |
-| PyPI package | https://pypi.org/project/pyNetX/ |
-| Source code | https://github.com/jackofsometrades99/pyNetX |
-| Article | https://medium.com/@get4sambhugn/i-created-a-new-python-library-for-netconf-f9f27475433c |
-
----
-
-## Author
-
-Developed by **Sambhu Nampoothiri G**.
-
+| Website | https://jackofsometrades99.github.io/pynetx-website/ |
+| ReadTheDocs | https://pynetx.readthedocs.io/en/latest/ |
+| PyPI | https://pypi.org/project/pyNetX/ |
+| GitHub | https://github.com/jackofsometrades99/pyNetX |
