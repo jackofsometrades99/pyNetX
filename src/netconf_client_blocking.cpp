@@ -74,6 +74,8 @@ void NetconfClient::clear_notification_queue() {
         {
             std::lock_guard<std::mutex> lk(_notif_queue_mtx);
             _notif_queue.clear();
+            _notif_rx_buffer.clear();
+            _notif_rx_partial_timer_active = false;
             _notif_queue_full_state = false;
             _notif_queue_high_watermark = 0;
         }

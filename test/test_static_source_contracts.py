@@ -88,3 +88,37 @@ def test_type_stub_lists_only_current_health_event_schema(project_root):
     ]
     for line in expected_lines:
         assert line in stub
+
+
+def test_notification_stream_parser_source_contract_includes_today_fix(project_root):
+    root = require_source_root(project_root)
+    netconf_hpp = read(root, "include/netconf_client.hpp")
+    non_blocking_cpp = read(root, "src/netconf_client_non_blocking.cpp")
+    blocking_cpp = read(root, "src/netconf_client_blocking.cpp")
+
+    assert "std::string _notif_rx_buffer" in netconf_hpp
+    assert "_notif_rx_partial_timer_active" in netconf_hpp
+    assert "_notif_rx_partial_started_at" in netconf_hpp
+
+    assert 'NETCONF_NOTIFICATION_EOM = "]]>]]>"' in non_blocking_cpp
+    assert "read_available_notification_bytes" in non_blocking_cpp
+    assert "process_rx_buffer_locked" in non_blocking_cpp
+    assert "process_eom_frame_locked" in non_blocking_cpp
+    assert "process_recovered_missing_eom_locked" in non_blocking_cpp
+    assert "find_notification_start_tag(_notif_rx_buffer, notification_start + 1)" in non_blocking_cpp
+    assert "Received a new notification start before the previous notification was completed" in non_blocking_cpp
+    assert '"malformed_notification"' in non_blocking_cpp
+    assert '"incomplete_notification"' in non_blocking_cpp
+    assert "_notif_rx_buffer.clear();" in blocking_cpp
+
+
+def test_notification_stream_parser_drops_orphan_prefix_before_eom_frames(project_root):
+    root = require_source_root(project_root)
+    non_blocking_cpp = read(root, "src/netconf_client_non_blocking.cpp")
+
+    orphan_message = "Received orphan notification bytes before a notification start tag; dropped orphan fragment"
+    eom_loop = "eom_pos = _notif_rx_buffer.find(NETCONF_NOTIFICATION_EOM)"
+
+    assert orphan_message in non_blocking_cpp
+    assert eom_loop in non_blocking_cpp
+    assert non_blocking_cpp.index(orphan_message) < non_blocking_cpp.index(eom_loop)

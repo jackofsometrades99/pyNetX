@@ -4,13 +4,13 @@
 
 ### Async-first NETCONF automation for Python
 
-**pyNetX** is a high-performance Python NETCONF client library with a native C++/pybind11 backend. It provides asyncio-friendly NETCONF RPCs, SSH-based NETCONF sessions, notification subscriptions, epoll-backed notification reactors, bounded notification queues, and process-wide notification health events.
+**pyNetX** is a high-performance, production level, Python NETCONF client library with a native C++/pybind11 backend. It provides asyncio-friendly NETCONF RPCs, SSH-based NETCONF sessions, notification subscriptions, epoll-backed notification reactors, bounded notification queues, and process-wide notification health events. It is battle-tested to manage **1,000+ live network devices** concurrently per instance.
 
 <br />
 
 [![PyPI](https://img.shields.io/pypi/v/pyNetX?label=PyPI&color=2563eb)](https://pypi.org/project/pyNetX/)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab)](#requirements)
-[![Version](https://img.shields.io/badge/Stable-v2.0.6-16a34a)](#v206--latest)
+[![Version](https://img.shields.io/badge/Stable-v2.0.7-16a34a)](#v207--latest)
 [![Protocol](https://img.shields.io/badge/Protocol-NETCONF-orange)](#why-pynetx)
 
 <br />
@@ -38,9 +38,10 @@ pyNetX is built for users who need more than a simple blocking NETCONF script. I
 | **epoll notification reactors** | Notification sockets are monitored by background reactors instead of one Python thread per device. |
 | **Bounded notification queues** | Per-client queues can be unbounded or bounded for controlled memory usage. |
 | **Health event stream** | Queue-full, drops, recovery, incomplete notifications, and timeout events are observable through `NotificationHealthEvent`. |
-| **Device labels** | v2.0.6 adds a user-provided `label` field to health events so devices can be identified beyond hostname/IP. |
-| **Event timestamps** | v2.0.6 adds UTC ISO-8601 millisecond timestamps to health events. |
-| **Expanded testing** | v2.0.6 includes deeper fake NETCONF integration tests and optional real Netopeer2/Sysrepo tests. |
+| **Malformed notification diagnostics** | v2.0.7 reports malformed notification frames, empty EOM frames, orphan fragments, and missing-EOM recovery through health events. |
+| **Device labels** | Health events include a user-provided `label` field so devices can be identified beyond hostname/IP. |
+| **Event timestamps** | Health events include UTC ISO-8601 millisecond timestamps. |
+| **Hardened notification parser** | v2.0.7 adds persistent stream parsing for coalesced, fragmented, and malformed notification payloads. |
 
 > Current protocol framing: pyNetX uses NETCONF 1.0 end-of-message framing (`]]>]]>`). NETCONF 1.1 chunked framing is not part of this release.
 
@@ -49,7 +50,7 @@ pyNetX is built for users who need more than a simple blocking NETCONF script. I
 ## Install
 
 ```bash
-pip install pyNetX==2.0.6
+pip install pyNetX==2.0.7
 ```
 
 Or install the latest available release:
@@ -177,11 +178,32 @@ asyncio.run(consume_notifications())
 
 pyNetX uses a separate notification SSH/NETCONF session for subscriptions, so normal RPCs can continue on the primary session while notifications are being received.
 
+### Notification stream parser behavior in v2.0.7
+
+NETCONF notifications arrive over SSH as a byte stream. One socket read can contain multiple notifications, part of one notification, one complete notification plus the start of the next one, or malformed device data. pyNetX v2.0.7 keeps a persistent receive buffer for each notification subscription and parses that stream instead of assuming one read equals one notification.
+
+Handled cases include:
+
+| Device stream case | pyNetX behavior | Health event |
+|---|---|---|
+| One complete notification ending in `]]>]]>` | Queues the notification with the EOM marker. | None |
+| Multiple complete notifications in one read | Splits and queues each notification separately. | None |
+| Complete notification followed by a partial next notification | Queues the complete notification and keeps the partial bytes until more data or a guard fires. | None immediately |
+| Partial notification completed by a later read | Combines the saved partial bytes with the later bytes and queues one complete notification. | None |
+| New `<notification>` starts before the previous notification completed | Queues the abandoned previous fragment for inspection and continues from the new notification. | `incomplete_notification` |
+| EOM-delimited data is not valid notification XML | Queues the malformed frame for inspection. | `malformed_notification` |
+| Empty EOM-only frame | Drops the empty frame. | `malformed_notification` |
+| Orphan bytes before a notification start tag | Drops the orphan prefix and continues parsing the notification. | `malformed_notification` |
+| Complete notification XML followed by another notification but missing EOM between them | Recovers and queues the first notification without adding a synthetic EOM. | `malformed_notification` |
+| Partial data never receives EOM before timeout/size guard | Queues the partial bytes without EOM. | `incomplete_notification` |
+
+Valid complete notifications remain backward-compatible: EOM-delimited notifications are returned with `]]>]]>` included. Partial and recovered missing-EOM fragments are returned exactly as received, without adding a synthetic EOM.
+
 ---
 
 ## Quick start: notification health events
 
-pyNetX v2.0.6 health events include both `timestamp` and `label`:
+pyNetX health events include both `timestamp` and `label`:
 
 ```python
 import asyncio
@@ -226,6 +248,7 @@ Common event types:
 | `notification_queue_full` | A bounded per-client notification queue became full and a notification was dropped. |
 | `notification_drops_summary` | More notifications were dropped while the queue remained full. Frequency is controlled by `notif_drop_event_threshold`. |
 | `notification_queue_recovered` | A previously full queue has free capacity again. |
+| `malformed_notification` | Malformed notification stream data was detected, such as empty EOM frames, invalid XML, orphan bytes before a notification, or recovered missing-EOM frames. |
 | `incomplete_notification` | Partial notification data was received without the NETCONF `]]>]]>` EOM marker and a guard fired. |
 | `timeout` | No health event was available before the requested timeout. This event has `valid == False` and `label == "None"`. |
 
@@ -436,7 +459,20 @@ See `docs/source/testing.rst` or the generated documentation for the full test c
 
 ---
 
-## v2.0.6 — latest
+## v2.0.7 — latest
+
+v2.0.7 focuses on hardened notification stream parsing for devices that coalesce, fragment, or corrupt notification payloads.
+
+Highlights:
+
+- Added a persistent per-subscription notification receive buffer.
+- Split multiple `]]>]]>`-delimited notifications received in one SSH read into separate queue entries.
+- Preserved trailing partial notification bytes across reactor callbacks.
+- Detected and reported abandoned partial notifications when a new `<notification>` starts before the previous one completed.
+- Added `malformed_notification` health events for malformed EOM-delimited frames, empty EOM frames, orphan bytes before a notification, and recovered missing-EOM frames.
+- Reset notification parser state during subscription cleanup, dead-session cleanup, and queue clearing.
+
+## v2.0.6
 
 v2.0.6 focuses on better device identification, event timing, and stronger release testing.
 

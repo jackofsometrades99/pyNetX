@@ -2,7 +2,7 @@ API reference
 =============
 
 This page documents the public Python API exposed by the ``pyNetX`` package in
-v2.0.6.
+v2.0.7.
 
 Constructor
 -----------
@@ -48,7 +48,7 @@ Parameters
      - SSH password.
    * - ``key_path``
      - ``""``
-     - Reserved for key-based authentication. Password authentication is the implemented path in v2.0.6.
+     - Reserved for key-based authentication. Password authentication is the implemented path in v2.0.7.
    * - ``connect_timeout``
      - ``60``
      - Overall connection/session setup timeout.
@@ -204,6 +204,24 @@ Returns whether the notification subscription/session is active.
 
 Deletes/closes the notification subscription session. This is useful in cleanup
 blocks and is not deprecated.
+
+
+Notification parser diagnostics
+-------------------------------
+
+The notification receiver in v2.0.7 parses a persistent stream buffer. It can
+split multiple EOM-delimited notifications from one SSH read, retain partial
+trailing bytes across reads, recover a complete notification when the device
+omits EOM before starting the next notification, and emit health events for bad
+stream data.
+
+Diagnostic health event types include:
+
+- ``malformed_notification`` for empty EOM frames, invalid EOM-delimited XML,
+  orphan bytes before a notification start tag, and recovered missing-EOM frames.
+- ``incomplete_notification`` when a partial notification times out, exceeds the
+  configured partial-size guard, or is abandoned because a new
+  ``<notification>`` starts before the previous notification completed.
 
 Notification health event APIs
 ------------------------------

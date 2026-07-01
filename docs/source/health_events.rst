@@ -2,8 +2,7 @@ Notification health events
 ==========================
 
 The notification health event stream is process-wide. It reports notification
-queue pressure, dropped notifications, recovery, incomplete notifications, and
-consumer wait timeouts.
+queue pressure, dropped notifications, recovery, incomplete notifications, malformed notification stream data, and consumer wait timeouts.
 
 Reading health events
 ---------------------
@@ -67,7 +66,7 @@ Event schema
      - ``False`` for timeout events, ``True`` for real health events.
    * - ``type``
      - ``str``
-     - Event type such as ``notification_queue_full``.
+     - Event type such as ``notification_queue_full`` or ``malformed_notification``.
    * - ``timestamp``
      - ``str``
      - UTC ISO-8601 timestamp with millisecond precision, for example ``2026-06-25T05:35:15.123Z``.
@@ -109,7 +108,7 @@ Event schema
      - Number of incomplete notifications observed.
    * - ``partial_bytes``
      - ``int``
-     - Partial notification bytes involved in an incomplete-notification event.
+     - Partial or malformed notification bytes involved in a diagnostic event.
    * - ``health_events_dropped``
      - ``int``
      - Number of health events dropped by the bounded global event bus.

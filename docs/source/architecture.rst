@@ -38,11 +38,12 @@ Notification flow
    NETCONF device
      -> notification SSH/NETCONF session
      -> epoll notification reactor
+     -> persistent notification stream parser
      -> per-client notification queue
      -> next_notification() / next_notification_async()
      -> NotificationHealthEvent stream when pressure or errors occur
 
-Normal RPC traffic and notification traffic use separate SSH/NETCONF sessions.
+Normal RPC traffic and notification traffic use separate SSH/NETCONF sessions. The notification path keeps a per-client receive buffer so coalesced frames, fragmented frames, and malformed fragments can be classified before data is exposed through the queue.
 
 Global components
 -----------------
@@ -75,6 +76,22 @@ Notification reactors use epoll to monitor notification sockets.
 
 Configure this during process startup before creating subscriptions.
 
+
+Notification stream parser
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NETCONF notifications arrive over SSH as bytes, not as one notification per
+read. pyNetX v2.0.7 stores unread or incomplete notification bytes in a
+persistent per-client receive buffer. The parser repeatedly extracts complete
+``]]>]]>``-delimited frames, keeps trailing partial bytes for later reads, and
+raises health events when malformed stream data is detected.
+
+The parser handles multiple complete notifications in one read, complete frames
+followed by partial trailing data, partial frames completed by later reads,
+abandoned partial frames when a new ``<notification>`` starts too early, empty
+EOM frames, orphan bytes before a notification start tag, and complete
+notifications recovered without an EOM before the next notification.
+
 Event bus
 ~~~~~~~~~
 
@@ -85,7 +102,7 @@ consumers read events with ``next_notification_event()`` or
 NETCONF framing
 ---------------
 
-pyNetX v2.0.6 uses NETCONF 1.0 EOM framing with ``]]>]]>``.
+pyNetX v2.0.7 uses NETCONF 1.0 EOM framing with ``]]>]]>``.
 
 Custom RPC callers should provide only the XML RPC payload. pyNetX appends the
 EOM marker internally.

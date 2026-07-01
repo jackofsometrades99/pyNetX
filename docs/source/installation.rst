@@ -6,7 +6,7 @@ Install from PyPI
 
 .. code-block:: bash
 
-   pip install pyNetX==2.0.6
+   pip install pyNetX==2.0.7
 
 Or install the latest available release:
 
@@ -17,7 +17,7 @@ Or install the latest available release:
 Python support
 --------------
 
-pyNetX v2.0.6 requires Python 3.11 or newer.
+pyNetX v2.0.7 requires Python 3.11 or newer.
 
 The release workflow builds manylinux wheels for Python 3.11, 3.12, 3.13, and
 3.14.

@@ -83,6 +83,58 @@ Example bounded queue:
        label="leaf-01",
    )
 
+
+Notification stream parser behavior
+-----------------------------------
+
+pyNetX v2.0.7 treats the notification SSH channel as a byte stream. A single
+reactor callback may receive multiple complete notifications, one complete
+notification plus part of the next one, only part of a notification, or malformed
+device data. The client keeps a persistent receive buffer for the active
+subscription and parses from that buffer.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Device stream case
+     - Behavior
+     - Health event
+   * - One complete notification ending in ``]]>]]>``
+     - Queued with the EOM marker.
+     - None
+   * - Multiple complete notifications in one read
+     - Split and queued as separate notifications.
+     - None
+   * - Complete notification followed by partial next notification
+     - Complete notification is queued; trailing partial bytes stay in the receive buffer.
+     - None immediately
+   * - Partial notification completed by a later read
+     - Saved partial bytes are combined with later bytes and queued as one complete notification.
+     - None
+   * - New ``<notification>`` starts before the previous one completed
+     - Previous fragment is queued as an abandoned partial and parsing continues from the new start tag.
+     - ``incomplete_notification``
+   * - EOM-delimited data is not valid notification XML
+     - Malformed frame is queued for inspection.
+     - ``malformed_notification``
+   * - Empty EOM-only frame
+     - Empty frame is dropped.
+     - ``malformed_notification``
+   * - Orphan bytes before a notification start tag
+     - Orphan prefix is dropped and parsing continues.
+     - ``malformed_notification``
+   * - Complete notification XML is followed by another notification without an EOM between them
+     - First notification is recovered and queued without adding a synthetic EOM.
+     - ``malformed_notification``
+   * - Partial bytes never receive EOM before a guard fires
+     - Partial bytes are queued without EOM.
+     - ``incomplete_notification``
+
+For backward compatibility, valid EOM-delimited notifications returned by
+``next_notification()`` and ``next_notification_async()`` still include the
+``]]>]]>`` marker. Partial and recovered missing-EOM fragments are returned as
+received, without adding a synthetic marker.
+
 Incomplete notification guards
 ------------------------------
 
@@ -94,4 +146,4 @@ the NETCONF ``]]>]]>`` end marker. pyNetX has two guards:
 
 At least one guard must remain enabled. Do not set both to ``-1``.
 
-When a guard fires, pyNetX emits an ``incomplete_notification`` health event.
+When a guard fires, pyNetX emits an ``incomplete_notification`` health event and queues the partial bytes for inspection.
