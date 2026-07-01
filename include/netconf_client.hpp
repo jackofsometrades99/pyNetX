@@ -19,6 +19,7 @@
 #include <atomic>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <chrono>
 
 // RAII Wrapper for an epoll file descriptor.
 class EpollRAII {
@@ -352,6 +353,18 @@ private:
     std::mutex session_mutex_;
     std::mutex ssh_mutex_;
     std::mutex dns_mutex_;
+
+    // This is a Persistent NETCONF notification receive buffer.
+    // One SSH read can contain:
+    //   - multiple complete EOM-delimited notifications
+    //   - one complete notification plus trailing partial bytes
+    //   - only malformed/orphan bytes
+    //   - notification XML without EOM
+    //
+    // Protected by _notif_queue_mtx.
+    std::string _notif_rx_buffer;
+    bool _notif_rx_partial_timer_active = false;
+    std::chrono::steady_clock::time_point _notif_rx_partial_started_at{};
 
     // Protects notif_session_, notif_channel_, notif_socket_,
     // notif_is_connected_, and notif_is_blocking_.

@@ -18,7 +18,7 @@ What pyNetX provides
 - epoll-backed notification reactor threads.
 - Per-client notification queues.
 - A process-wide notification health event stream.
-- Device labels and UTC timestamps in health events starting in v2.0.6.
+- Device labels, UTC timestamps, and notification stream health diagnostics.
 
 Current protocol behavior
 -------------------------
@@ -27,7 +27,7 @@ pyNetX currently uses NETCONF 1.0 end-of-message framing with the ``]]>]]>``
 marker. Do not append this marker in custom RPC payloads; pyNetX appends it
 internally.
 
-NETCONF 1.1 chunked framing is not part of v2.0.6.
+NETCONF 1.1 chunked framing is not part of v2.0.7.
 
 Async-first direction
 ---------------------
@@ -46,6 +46,23 @@ The following helper APIs are not deprecated:
 - ``delete_subscription()``
 - notification health event APIs
 - global thread-pool and reactor configuration APIs
+
+
+New in v2.0.7
+-------------
+
+- Notification reads are parsed as a continuous byte stream instead of assuming
+  one SSH read equals one notification.
+- Multiple EOM-delimited notifications received in one read are split into
+  separate queue entries.
+- Trailing partial notification bytes are preserved across reactor callbacks and
+  combined with later bytes when the notification completes.
+- If a new ``<notification>`` starts before the previous notification completed,
+  pyNetX queues the abandoned previous fragment and emits an
+  ``incomplete_notification`` health event.
+- Malformed stream data such as empty EOM frames, invalid EOM-delimited XML,
+  orphan bytes before a notification, and recovered missing-EOM frames emits
+  ``malformed_notification`` health events.
 
 New in v2.0.6
 -------------

@@ -28,8 +28,17 @@ def pyNetX_module():
 
 
 @pytest.fixture(autouse=True)
-def clear_global_notification_events(pyNetX_module):
-    """Keep the process-wide health event bus isolated between tests."""
+def clear_global_notification_events(request):
+    """Keep the process-wide health event bus isolated between tests.
+
+    Static source-contract tests do not need the compiled pyNetX extension, so
+    avoid importing it unless the test actually requested ``pyNetX_module``.
+    """
+    if "pyNetX_module" not in request.fixturenames:
+        yield
+        return
+
+    pyNetX_module = request.getfixturevalue("pyNetX_module")
     pyNetX_module.clear_notification_events()
     yield
     pyNetX_module.clear_notification_events()

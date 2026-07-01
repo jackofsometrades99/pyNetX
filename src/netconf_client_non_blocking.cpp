@@ -18,6 +18,240 @@
 #include <poll.h>
 #include <unistd.h>
 #include <errno.h>
+#include <algorithm>
+#include <cctype>
+
+namespace {
+    constexpr const char* NETCONF_NOTIFICATION_EOM = "]]>]]>";
+    constexpr std::size_t NETCONF_NOTIFICATION_EOM_LEN = 6;
+    constexpr int NOTIFICATION_POLL_SLICE_MS = 1000;
+
+    std::string trim_copy(const std::string& input) {
+        auto begin = std::find_if_not(input.begin(), input.end(), [](unsigned char c) {
+            return std::isspace(c) != 0;
+        });
+        auto end = std::find_if_not(input.rbegin(), input.rend(), [](unsigned char c) {
+            return std::isspace(c) != 0;
+        }).base();
+
+        if (begin >= end) {
+            return std::string{};
+        }
+
+        return std::string(begin, end);
+    }
+
+    std::string xml_local_name(const char* name) {
+        if (!name) {
+            return std::string{};
+        }
+
+        std::string value(name);
+        const std::size_t colon = value.rfind(':');
+        if (colon != std::string::npos) {
+            return value.substr(colon + 1);
+        }
+        return value;
+    }
+
+    bool is_valid_notification_document(const std::string& frame_without_eom) {
+        const std::string payload = trim_copy(frame_without_eom);
+        if (payload.empty()) {
+            return false;
+        }
+
+        tinyxml2::XMLDocument doc;
+        const tinyxml2::XMLError parse_status = doc.Parse(payload.c_str(), payload.size());
+        if (parse_status != tinyxml2::XML_SUCCESS) {
+            return false;
+        }
+
+        tinyxml2::XMLElement* root = doc.RootElement();
+        if (!root) {
+            return false;
+        }
+
+        return xml_local_name(root->Name()) == "notification";
+    }
+
+    std::size_t find_notification_start_tag(
+        const std::string& data,
+        std::size_t from = 0
+    ) {
+        std::size_t pos = from;
+
+        while (true) {
+            pos = data.find('<', pos);
+            if (pos == std::string::npos) {
+                return std::string::npos;
+            }
+
+            if (pos + 1 >= data.size()) {
+                return std::string::npos;
+            }
+
+            const char next = data[pos + 1];
+            if (next == '/' || next == '!' || next == '?') {
+                ++pos;
+                continue;
+            }
+
+            std::size_t name_begin = pos + 1;
+            std::size_t name_end = name_begin;
+            while (name_end < data.size()) {
+                unsigned char c = static_cast<unsigned char>(data[name_end]);
+                if (std::isspace(c) || data[name_end] == '>' || data[name_end] == '/') {
+                    break;
+                }
+                ++name_end;
+            }
+
+            if (name_end == name_begin) {
+                ++pos;
+                continue;
+            }
+
+            std::string qname = data.substr(name_begin, name_end - name_begin);
+            const std::size_t colon = qname.rfind(':');
+            const std::string local =
+                colon == std::string::npos ? qname : qname.substr(colon + 1);
+
+            if (local == "notification") {
+                return pos;
+            }
+
+            pos = name_end;
+        }
+    }
+
+    bool benign_notification_prefix(const std::string& prefix) {
+        const std::string trimmed = trim_copy(prefix);
+        if (trimmed.empty()) {
+            return true;
+        }
+
+        if (trimmed.rfind("<?xml", 0) == 0) {
+            const std::size_t end_decl = trimmed.find("?>");
+            if (end_decl != std::string::npos) {
+                return trim_copy(trimmed.substr(end_decl + 2)).empty();
+            }
+        }
+
+        return false;
+    }
+
+    bool notification_end_after_start(
+        const std::string& data,
+        std::size_t start,
+        std::size_t& end_after
+    ) {
+        if (start == std::string::npos || start + 1 >= data.size()) {
+            return false;
+        }
+
+        std::size_t name_begin = start + 1;
+        std::size_t name_end = name_begin;
+        while (name_end < data.size()) {
+            unsigned char c = static_cast<unsigned char>(data[name_end]);
+            if (std::isspace(c) || data[name_end] == '>' || data[name_end] == '/') {
+                break;
+            }
+            ++name_end;
+        }
+
+        if (name_end == name_begin) {
+            return false;
+        }
+
+        const std::string qname = data.substr(name_begin, name_end - name_begin);
+        const std::string close_tag = "</" + qname + ">";
+        const std::size_t close_pos = data.find(close_tag, name_end);
+        if (close_pos == std::string::npos) {
+            return false;
+        }
+
+        end_after = close_pos + close_tag.size();
+        return true;
+    }
+
+    std::string read_available_notification_bytes(
+        LIBSSH2_CHANNEL* chan,
+        LIBSSH2_SESSION* sess
+    ) {
+        if (!chan || !sess) {
+            throw NetconfException("Notification channel/session is not active");
+        }
+
+        std::string bytes;
+        char buffer[4096];
+
+        while (true) {
+            int nbytes = libssh2_channel_read_nonblocking(
+                chan,
+                buffer,
+                sizeof(buffer),
+                0
+            );
+
+            if (nbytes > 0) {
+                bytes.append(buffer, nbytes);
+                continue;
+            }
+
+            if (nbytes == 0 || nbytes == LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+
+            char* err_msg = nullptr;
+            libssh2_session_last_error(sess, &err_msg, nullptr, 0);
+            throw NetconfException(
+                "Error reading from notification channel: " +
+                std::string(err_msg ? err_msg : "Unknown error")
+            );
+        }
+
+        return bytes;
+    }
+
+    int poll_notification_fd(int fd, int timeout_ms) {
+        if (fd < 0) {
+            throw NetconfException("Invalid notification socket while waiting for EOM");
+        }
+
+        while (true) {
+            struct pollfd pfd{};
+            pfd.fd = fd;
+            pfd.events = POLLIN | POLLPRI;
+
+            int ret = poll(&pfd, 1, timeout_ms);
+            if (ret < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                throw NetconfException(
+                    "Poll error while waiting for notification EOM: " +
+                    std::string(strerror(errno))
+                );
+            }
+
+            if (ret == 0) {
+                return 0;
+            }
+
+            if (pfd.revents & POLLNVAL) {
+                throw NetconfException("Invalid notification socket while waiting for EOM");
+            }
+            if (pfd.revents & (POLLERR | POLLHUP)) {
+                throw NetconfException("Notification socket closed while waiting for EOM");
+            }
+            if (pfd.revents & (POLLIN | POLLPRI)) {
+                return 1;
+            }
+
+            return 0;
+        }
+    }
+}
 
 bool NetconfClient::connect_non_blocking() {
     if (is_connected_) {
@@ -529,8 +763,9 @@ void NetconfClient::mark_notification_dead() noexcept {
         {
             std::lock_guard<std::mutex> lk(_notif_queue_mtx);
             _notif_queue.clear();
+            _notif_rx_buffer.clear();
+            _notif_rx_partial_timer_active = false;
         }
-
         _notif_queue_cv.notify_all();
     } catch (...) {
         // Never throw from cleanup called by reactor thread.
@@ -539,53 +774,46 @@ void NetconfClient::mark_notification_dead() noexcept {
 
 void NetconfClient::on_notification_ready(int fd) {
     try {
-        std::string xml;
-
-        {
-            std::lock_guard<std::mutex> guard(notif_mutex_);
-
-            if (!notif_channel_ || !notif_session_) {
-                throw NetconfException("Notification channel/session is not active");
-            }
-
-            if (notif_socket_.get() != fd) {
-                throw NetconfException("Notification FD does not match active subscription socket");
-            }
-
-            xml = read_until_eom_non_blocking(
-                notif_channel_.get(),
-                notif_session_.get(),
-                fd,
-                -1,  // actual notification read: wait until EOM or incomplete guard
-                notif_incomplete_max_kb_,
-                notif_incomplete_timeout_
-            );
-        }
-
-        if (xml.empty()) {
-            return;
-        }
-
-        const bool is_incomplete_notification =
-            (xml.find("]]>]]>") == std::string::npos);
-
         std::vector<NotificationHealthEvent> events_to_emit;
-        bool queued_notification = false;
+        std::size_t queued_notifications = 0;
 
-        {
-            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+        auto flush_events_and_notifications = [&]() {
+            for (auto& event : events_to_emit) {
+                NotificationEventBus::instance().emit(std::move(event));
+            }
+            events_to_emit.clear();
 
-            if (is_incomplete_notification) {
+            if (queued_notifications > 0) {
+                _notif_queue_cv.notify_all();
+                queued_notifications = 0;
+            }
+        };
+
+        auto add_diagnostic_event_locked = [&](
+            const std::string& type,
+            const std::string& message,
+            std::int64_t partial_bytes,
+            bool increment_incomplete_count
+        ) {
+            if (increment_incomplete_count) {
                 ++_notif_incomplete_count;
-                events_to_emit.push_back(
-                    make_notification_health_event_locked(
-                        "incomplete_notification",
-                        "Received notification bytes without NETCONF EOM; queued partial notification",
-                        fd,
-                        0,
-                        static_cast<std::int64_t>(xml.size())
-                    )
-                );
+            }
+
+            events_to_emit.push_back(
+                make_notification_health_event_locked(
+                    type,
+                    message,
+                    fd,
+                    0,
+                    partial_bytes
+                )
+            );
+        };
+
+        auto enqueue_or_drop_locked = [&](std::string notification,
+                                          std::int64_t diagnostic_bytes) {
+            if (notification.empty()) {
+                return;
             }
 
             if (_notif_queue_max_size_ >= 0 &&
@@ -595,10 +823,6 @@ void NetconfClient::on_notification_ready(int fd) {
                 const std::uint64_t dropped_delta =
                     _notif_dropped_queue_full_count - _notif_last_drop_event_count;
 
-                // Emit immediately when the queue first becomes full, then emit
-                // summarized updates every notif_drop_event_threshold additional
-                // drops. Default is 1, which emits one health event per dropped
-                // notification while the queue remains full.
                 const bool first_queue_full_event = !_notif_queue_full_state;
 
                 if (first_queue_full_event ||
@@ -614,9 +838,7 @@ void NetconfClient::on_notification_ready(int fd) {
                             "Notification queue is full; dropping notifications",
                             fd,
                             static_cast<std::int64_t>(dropped_delta),
-                            is_incomplete_notification
-                                ? static_cast<std::int64_t>(xml.size())
-                                : 0
+                            diagnostic_bytes
                         )
                     );
 
@@ -629,26 +851,336 @@ void NetconfClient::on_notification_ready(int fd) {
                         << std::endl;
                 }
 
-                // Do not enqueue or notify consumers. The health event stream
-                // carries the drop information to Python.
-            } else {
-                _notif_queue.push_back(std::move(xml));
-                queued_notification = true;
+                return;
+            }
 
-                ++_notif_enqueued_count;
+            _notif_queue.push_back(std::move(notification));
+            ++queued_notifications;
+            ++_notif_enqueued_count;
 
-                if (_notif_queue.size() > _notif_queue_high_watermark) {
-                    _notif_queue_high_watermark = _notif_queue.size();
+            if (_notif_queue.size() > _notif_queue_high_watermark) {
+                _notif_queue_high_watermark = _notif_queue.size();
+            }
+        };
+
+        auto process_eom_frame_locked = [&](const std::string& frame_without_eom) {
+            const std::string trimmed = trim_copy(frame_without_eom);
+            const std::int64_t frame_bytes =
+                static_cast<std::int64_t>(frame_without_eom.size());
+
+            if (trimmed.empty()) {
+                add_diagnostic_event_locked(
+                    "malformed_notification",
+                    "Received NETCONF EOM marker without notification payload; dropped empty frame",
+                    frame_bytes,
+                    false
+                );
+                return;
+            }
+
+            const bool malformed = !is_valid_notification_document(frame_without_eom);
+            if (malformed) {
+                add_diagnostic_event_locked(
+                    "malformed_notification",
+                    "Received EOM-delimited data that is not a valid NETCONF notification; queued malformed frame",
+                    frame_bytes,
+                    false
+                );
+            }
+
+            enqueue_or_drop_locked(
+                frame_without_eom + NETCONF_NOTIFICATION_EOM,
+                malformed ? frame_bytes : 0
+            );
+        };
+
+        auto process_recovered_missing_eom_locked = [&](const std::string& frame_without_eom) {
+            const std::int64_t frame_bytes =
+                static_cast<std::int64_t>(frame_without_eom.size());
+
+            add_diagnostic_event_locked(
+                "malformed_notification",
+                "Recovered complete notification XML without NETCONF EOM before the next notification; queued recovered frame",
+                frame_bytes,
+                false
+            );
+
+            enqueue_or_drop_locked(frame_without_eom, frame_bytes);
+        };
+
+        auto process_rx_buffer_locked = [&]() {
+            bool progressed = true;
+
+            while (progressed) {
+                progressed = false;
+
+                if (_notif_rx_buffer.empty()) {
+                    _notif_rx_partial_timer_active = false;
+                    break;
                 }
+
+                const std::size_t first_notification =
+                    find_notification_start_tag(_notif_rx_buffer, 0);
+
+                if (first_notification != std::string::npos && first_notification > 0) {
+                    const std::string prefix = _notif_rx_buffer.substr(0, first_notification);
+                    if (!benign_notification_prefix(prefix)) {
+                        add_diagnostic_event_locked(
+                            "malformed_notification",
+                            "Received orphan notification bytes before a notification start tag; dropped orphan fragment",
+                            static_cast<std::int64_t>(prefix.size()),
+                            false
+                        );
+                        _notif_rx_buffer.erase(0, first_notification);
+                        _notif_rx_partial_timer_active = false;
+                        progressed = true;
+                        continue;
+                    }
+                }
+
+                std::size_t eom_pos = std::string::npos;
+                while (
+                    (
+                        eom_pos = _notif_rx_buffer.find(NETCONF_NOTIFICATION_EOM)
+                    ) != std::string::npos
+                ) {
+                    std::string frame = _notif_rx_buffer.substr(0, eom_pos);
+                    _notif_rx_buffer.erase(0, eom_pos + NETCONF_NOTIFICATION_EOM_LEN);
+                    _notif_rx_partial_timer_active = false;
+
+                    process_eom_frame_locked(frame);
+                    progressed = true;
+                }
+                if (_notif_rx_buffer.empty()) {
+                    _notif_rx_partial_timer_active = false;
+                    break;
+                }
+
+                std::size_t notification_start = find_notification_start_tag(_notif_rx_buffer, 0);
+                if (notification_start != std::string::npos) {
+                    std::size_t notification_end = std::string::npos;
+
+                    if (notification_end_after_start(
+                            _notif_rx_buffer,
+                            notification_start,
+                            notification_end
+                        )) {
+                        const std::size_t next_notification =
+                            find_notification_start_tag(_notif_rx_buffer, notification_end);
+
+                        if (next_notification != std::string::npos) {
+                            std::string recovered = _notif_rx_buffer.substr(0, notification_end);
+                            _notif_rx_buffer.erase(0, notification_end);
+                            _notif_rx_partial_timer_active = false;
+
+                            process_recovered_missing_eom_locked(recovered);
+                            progressed = true;
+                            continue;
+                        }
+                    } else {
+                        const std::size_t next_notification =
+                            find_notification_start_tag(_notif_rx_buffer, notification_start + 1);
+
+                        if (next_notification != std::string::npos) {
+                            std::string abandoned_partial =
+                                _notif_rx_buffer.substr(0, next_notification);
+
+                            _notif_rx_buffer.erase(0, next_notification);
+                            _notif_rx_partial_timer_active = false;
+
+                            const std::int64_t partial_bytes =
+                                static_cast<std::int64_t>(abandoned_partial.size());
+
+                            add_diagnostic_event_locked(
+                                "incomplete_notification",
+                                "Received a new notification start before the previous notification was completed; queued abandoned partial notification",
+                                partial_bytes,
+                                true
+                            );
+
+                            enqueue_or_drop_locked(std::move(abandoned_partial), partial_bytes);
+
+                            progressed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if (_notif_rx_buffer.empty()) {
+                _notif_rx_partial_timer_active = false;
+            } else if (!_notif_rx_partial_timer_active) {
+                _notif_rx_partial_timer_active = true;
+                _notif_rx_partial_started_at = std::chrono::steady_clock::now();
+            }
+        };
+
+        auto partial_size_limit_reached_locked = [&]() -> bool {
+            if (notif_incomplete_max_kb_ <= 0 || _notif_rx_buffer.empty()) {
+                return false;
+            }
+
+            const std::size_t max_bytes =
+                static_cast<std::size_t>(notif_incomplete_max_kb_) * 1024;
+            return _notif_rx_buffer.size() >= max_bytes;
+        };
+
+        auto partial_timeout_reached_locked = [&]() -> bool {
+            if (notif_incomplete_timeout_ <= 0 ||
+                !_notif_rx_partial_timer_active ||
+                _notif_rx_buffer.empty()) {
+                return false;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            return now - _notif_rx_partial_started_at >=
+                std::chrono::seconds(notif_incomplete_timeout_);
+        };
+
+        auto finalize_incomplete_locked = [&](const std::string& reason) {
+            if (_notif_rx_buffer.empty()) {
+                _notif_rx_partial_timer_active = false;
+                return;
+            }
+
+            std::string partial = std::move(_notif_rx_buffer);
+            _notif_rx_buffer.clear();
+            _notif_rx_partial_timer_active = false;
+
+            const std::int64_t partial_bytes =
+                static_cast<std::int64_t>(partial.size());
+
+            add_diagnostic_event_locked(
+                "incomplete_notification",
+                reason,
+                partial_bytes,
+                true
+            );
+
+            enqueue_or_drop_locked(std::move(partial), partial_bytes);
+        };
+
+        auto read_currently_available = [&]() -> std::string {
+            std::lock_guard<std::mutex> guard(notif_mutex_);
+
+            if (!notif_channel_ || !notif_session_) {
+                throw NetconfException("Notification channel/session is not active");
+            }
+
+            if (notif_socket_.get() != fd) {
+                throw NetconfException("Notification FD does not match active subscription socket");
+            }
+
+            return read_available_notification_bytes(
+                notif_channel_.get(),
+                notif_session_.get()
+            );
+        };
+
+        std::string bytes = read_currently_available();
+
+        {
+            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+
+            if (!bytes.empty()) {
+                _notif_rx_buffer.append(bytes);
+            }
+
+            process_rx_buffer_locked();
+
+            if (partial_size_limit_reached_locked()) {
+                finalize_incomplete_locked(
+                    "Received notification bytes without NETCONF EOM; size guard fired and queued partial notification"
+                );
             }
         }
 
-        for (auto& event : events_to_emit) {
-            NotificationEventBus::instance().emit(std::move(event));
-        }
+        flush_events_and_notifications();
 
-        if (queued_notification) {
-            _notif_queue_cv.notify_one();
+        while (true) {
+            bool should_wait = false;
+            int wait_ms = 0;
+
+            {
+                std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+
+                process_rx_buffer_locked();
+
+                if (partial_size_limit_reached_locked()) {
+                    finalize_incomplete_locked(
+                        "Received notification bytes without NETCONF EOM; size guard fired and queued partial notification"
+                    );
+                } else if (partial_timeout_reached_locked()) {
+                    finalize_incomplete_locked(
+                        "Received notification bytes without NETCONF EOM; timeout guard fired and queued partial notification"
+                    );
+                }
+
+                if (!_notif_rx_buffer.empty() && notif_incomplete_timeout_ > 0) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto deadline =
+                        _notif_rx_partial_started_at +
+                        std::chrono::seconds(notif_incomplete_timeout_);
+
+                    if (now >= deadline) {
+                        finalize_incomplete_locked(
+                            "Received notification bytes without NETCONF EOM; timeout guard fired and queued partial notification"
+                        );
+                    } else {
+                        const auto remaining_ms =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                deadline - now
+                            ).count();
+
+                        wait_ms = static_cast<int>(
+                            std::min<long long>(
+                                std::max<long long>(1, remaining_ms),
+                                NOTIFICATION_POLL_SLICE_MS
+                            )
+                        );
+                        should_wait = true;
+                    }
+                }
+            }
+
+            flush_events_and_notifications();
+
+            if (!should_wait) {
+                break;
+            }
+
+            const int ready = poll_notification_fd(fd, wait_ms);
+            if (ready == 0) {
+                {
+                    std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+                    if (partial_timeout_reached_locked()) {
+                        finalize_incomplete_locked(
+                            "Received notification bytes without NETCONF EOM; timeout guard fired and queued partial notification"
+                        );
+                    }
+                }
+                flush_events_and_notifications();
+                continue;
+            }
+
+            std::string more = read_currently_available();
+
+            {
+                std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+                if (!more.empty()) {
+                    _notif_rx_buffer.append(more);
+                }
+
+                process_rx_buffer_locked();
+
+                if (partial_size_limit_reached_locked()) {
+                    finalize_incomplete_locked(
+                        "Received notification bytes without NETCONF EOM; size guard fired and queued partial notification"
+                    );
+                }
+            }
+
+            flush_events_and_notifications();
         }
 
     } catch (const std::exception& e) {
@@ -953,6 +1485,12 @@ std::string NetconfClient::subscribe_non_blocking(
             rpc,
             read_timeout_
         );
+
+        {
+            std::lock_guard<std::mutex> lk(_notif_queue_mtx);
+            _notif_rx_buffer.clear();
+            _notif_rx_partial_timer_active = false;
+        }
 
         // Now it is safe for the reactor to read real <notification> messages.
         NotificationReactorManager::instance().add(

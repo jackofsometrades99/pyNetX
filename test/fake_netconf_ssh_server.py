@@ -89,6 +89,7 @@ class FakeNetconfSSHServer:
         password: str = "admin",
         rpc_responder: Callable[[str], str] | None = None,
         notifications: Iterable[str] | None = None,
+        notification_raw_chunks: Iterable[str] | None = None,
         incomplete_notification: str | None = None,
         notification_start_delay: float = 0.20,
         notification_interval: float = 0.05,
@@ -99,6 +100,7 @@ class FakeNetconfSSHServer:
         self.password = password
         self.rpc_responder = rpc_responder or (lambda rpc: OK_REPLY)
         self.notifications = list(notifications or [])
+        self.notification_raw_chunks = list(notification_raw_chunks or [])
         self.incomplete_notification = incomplete_notification
         self.notification_start_delay = notification_start_delay
         self.notification_interval = notification_interval
@@ -255,6 +257,20 @@ class FakeNetconfSSHServer:
 
     def _send_notifications(self, channel) -> None:
         time.sleep(self.notification_start_delay)
+
+        # Raw chunks are sent exactly as provided. These are used by stream-parser
+        # tests to simulate bad devices and TCP/SSH coalescing/splitting cases:
+        # multiple EOM-delimited notifications in one read, trailing partial
+        # frames, missing EOM between notifications, empty EOM frames, etc.
+        for chunk in self.notification_raw_chunks:
+            if self._stop.is_set():
+                return
+            try:
+                self._send_all(channel, chunk)
+            except Exception:
+                return
+            time.sleep(self.notification_interval)
+
         for payload in self.notifications:
             if self._stop.is_set():
                 return

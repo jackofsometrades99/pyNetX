@@ -85,7 +85,7 @@ closed local TCP port.
 Uses a local Paramiko-based fake NETCONF-over-SSH server. It tests async
 connect/RPC/disconnect, built-in RPC builders, subscription flow, notifications,
 queue-full events, drop summaries, queue recovery, labels, timestamps, default
-label behavior, and incomplete-notification events.
+label behavior, and incomplete-notification events, malformed notification events, and coalesced/fragmented notification stream parsing.
 
 ``test_client_lifecycle_and_concurrency.py``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -98,8 +98,8 @@ two independent clients, and delete-subscription/resubscribe behavior.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Checks queue peek non-destructiveness, FIFO ordering, ``peek_notifications(-1)``,
-zero-sized bounded queues, high-watermark behavior, and incomplete notification
-size guards.
+zero-sized bounded queues, high-watermark behavior, incomplete notification
+size guards, and bad-device notification stream cases.
 
 ``test_rpc_payloads_and_framing.py``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -156,7 +156,7 @@ Create a clean Python 3.11 environment and install the matching wheel:
    python -m pip install -U pip
    python -m pip install pytest pytest-asyncio paramiko
    python -m pip install -r /home/sambhu/Documents/pyNetX/netconf_pybind/test/requirements.txt
-   python -m pip install /home/sambhu/Documents/pyNetX/netconf_pybind/wheelhouse/pynetx-2.0.6-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+   python -m pip install /home/sambhu/Documents/pyNetX/netconf_pybind/wheelhouse/pynetx-2.0.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 
 Verify from outside the repository root:
 

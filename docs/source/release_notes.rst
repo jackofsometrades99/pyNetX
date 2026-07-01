@@ -1,8 +1,53 @@
 Release notes
 =============
 
-v2.0.6 — latest
+v2.0.7 — latest
 ---------------
+
+Focus: hardened notification stream parsing for devices that coalesce,
+fragment, or corrupt NETCONF notification payloads.
+
+Added
+~~~~~
+
+- Added a persistent per-subscription notification receive buffer.
+- Added stream parsing that can split multiple ``]]>]]>``-delimited
+  notifications received in one SSH read into separate queue entries.
+- Added preservation of trailing partial notification bytes across notification
+  reactor callbacks.
+- Added detection for abandoned partial notifications when a new
+  ``<notification>`` start tag appears before the previous notification
+  completed.
+- Added ``malformed_notification`` health events for malformed notification
+  stream data.
+
+Changed
+~~~~~~~
+
+- Notification delivery no longer treats one libssh2 read as one notification.
+- Valid complete EOM-delimited notifications continue to be queued with the EOM
+  marker included for backward compatibility.
+- Partial notifications and recovered missing-EOM fragments are queued exactly as
+  received, without adding a synthetic EOM marker.
+- Notification parser state is cleared during subscription reset, dead-session
+  cleanup, and notification queue clearing.
+
+Handled bad-device cases
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Multiple complete notifications combined in one SSH read.
+- One complete notification followed by a partial next notification.
+- Partial notification bytes completed by a later read.
+- A new notification start arriving before the previous notification completed.
+- Empty EOM-only frames.
+- EOM-delimited data that is not valid notification XML.
+- Orphan bytes before a notification start tag.
+- Complete notification XML followed by another notification without EOM between
+  them.
+- Partial data that never receives EOM before the timeout or size guard fires.
+
+v2.0.6
+------
 
 Focus: device-identifiable health events, event timing, and expanded release
 testing.

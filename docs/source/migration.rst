@@ -95,3 +95,16 @@ value is a UTC ISO-8601 string with millisecond precision and ``Z`` suffix.
 
 Timeout events are not associated with a specific client and use
 ``label == "None"``.
+
+Notification behavior in v2.0.7
+--------------------------------
+
+Applications that consume notifications should be aware of the stricter stream
+parser diagnostics added in v2.0.7. Valid EOM-delimited notifications are still
+returned with ``]]>]]>`` included. When a device sends malformed stream data,
+pyNetX may also queue diagnostic payloads exactly as received and emit either
+``malformed_notification`` or ``incomplete_notification`` health events.
+
+Consumers that previously assumed every queued item was a valid full notification
+should monitor the health event stream and treat queued payloads associated with
+parser diagnostics as device evidence for logging or investigation.
